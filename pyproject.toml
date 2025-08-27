@@ -1,0 +1,25 @@
+[project]
+name = "akiya-lens"
+version = "0.1.0"
+description = "山麓空き家マップ / Vacant-House Risk Scorer"
+authors = [
+    { name = "Ayuko Iwata" }
+]
+readme = "README.md"
+requires-python = ">=3.10"
+
+dependencies = [
+    "streamlit",
+    "pandas",
+    "scikit-learn",
+    "shap",
+    "folium",
+    "pydeck",
+    # 地理系（必要になったらコメント外す）
+    # "geopandas",
+    # "shapely",
+    # "pyproj"
+]
+
+[tool.uv]  # uv専用設定（任意）
+index-url = "https://pypi.org/simple"
