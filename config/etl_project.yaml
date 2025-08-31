@@ -1,0 +1,90 @@
+# config/etl_project.yaml
+project:
+  name: akiya-lens
+  role: "etl"     # ref / etl
+  version: v1
+  description: "空き家率・人口・ハザード等のソース別ETL（頻繁に更新）"
+
+io:
+  raw_dir: data/raw              # 手動DL or 将来は自動取得先
+  interim_dir: data/interim      # 中間生成物（parquet推奨）
+  processed_dir: data/processed  # 前処理済み（JOIN前）
+  encoding_in_candidates: ["cp932","shift_jis","utf-8-sig","utf-8"]
+  encoding_out: utf-8-sig
+  default_sep: ","
+
+# データセットごとに前処理仕様を切り出す
+datasets:
+  vacancy_rate_2023:
+    source_files:
+      - "FEA_vacancy_2023.csv"       # 例：手動DLしたファイル名
+    key_map:
+      join_key_left: "市区町村コード"  # マスタと突合するキー（右側は常にマスタ）
+      join_key_right: "市区町村コード"
+    columns_map:
+      市区町村コード: ["地域コード", "全国地方公共団体コード", "標準地域コード"]
+      空き家率: ["空き家率", "空家率(%)", "空家率"]
+      住宅総数: ["住宅総数"]
+      調査年: ["年", "年度"]
+    dtypes:
+      市区町村コード: "str"
+      空き家率: "float"
+      住宅総数: "int"
+      調査年: "int"
+    coercion:
+      percent_to_float: ["空き家率"]   # "13.2%" → 13.2 に変換
+    fillna:
+      空き家率: null
+      住宅総数: 0
+    filters:
+      調査年: [2023]                 # 複数年含む場合、ここで最新を選ぶ
+    output:
+      filename_template: "vacancy_rate_2023__${project.version}__${date:%Y%m%d}.csv"
+
+  population_basic:
+    source_files: ["estat_population_2018_2023.csv"]
+    columns_map:
+      市区町村コード: ["地域コード", "全国地方公共団体コード", "標準地域コード"]
+      総人口: ["総人口", "人口総数"]
+      年少人口: ["年少人口"]
+      生産年齢人口: ["生産年齢人口"]
+      老年人口: ["老年人口"]
+      年: ["年", "年度"]
+    dtypes:
+      市区町村コード: "str"
+      総人口: "int"
+      年: "int"
+    fillna:
+      総人口: 0
+    filters:
+      年: [2018, 2023]
+    output:
+      filename_template: "population_basic__${project.version}__${date:%Y%m%d}.csv"
+
+joins:
+  # 将来：processed同士やprocessed×masterの結合出力をここで定義
+  # 例） vacancy × population の左外部結合
+  vacancy_x_population:
+    left: "data/processed/vacancy_rate_2023__*.csv"
+    right: "data/processed/population_basic__*.csv"
+    on:
+      left_key: "市区町村コード"
+      right_key: "市区町村コード"
+    how: "left"
+    output:
+      filename_template: "feat_baseline__${project.version}__${date:%Y%m%d}.csv"
+
+validation:
+  # 各データセットの検証ルール
+  vacancy_rate_2023:
+    required: ["市区町村コード", "空き家率"]
+    rules:
+      市区町村コード: {type: str, pattern: "^[0-9]{5,6}$"}
+      空き家率: {type: float, range: [0, 100]}
+  population_basic:
+    required: ["市区町村コード", "総人口", "年"]
+    rules:
+      年: {type: int, range: [2000, 2100]}
+
+logging:
+  level: INFO

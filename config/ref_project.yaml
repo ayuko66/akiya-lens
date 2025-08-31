@@ -1,0 +1,40 @@
+project:
+  name: akiya-lens
+  role: "reference"
+  version: v1
+  description: "市区町村マスタ等の安定した参照データを生成・維持するための設定"
+
+io:
+  output_dir: /mnt/data/data/master
+  encoding_out: utf-8-sig
+
+columns_map:
+  city_master:
+    市区町村コード: ["標準地域コード", "全国地方公共団体コード", "全国地方公共団体番号", "市区町村コード"]
+    市区町村名: ["市区町村", "団体名"]
+    都道府県名: ["都道府県", "都道府県名"]
+    都道府県コード: ["都道府県コード"]
+    市区町村ふりがな: ["市区町村（ふりがな）", "市区町村名（よみ）"]
+    政令市･郡･支庁･振興局等: ["政令市･郡･支庁･振興局等"]
+    政令市･郡･支庁･振興局等（ふりがな）: ["政令市･郡･支庁･振興局等（ふりがな）"]
+    過疎地域市町村: ["過疎地域市町村"]
+    都市種別: ["都市種別"]
+
+targets:
+  prefectures: []
+
+validation:
+  city_master:
+    required: ["市区町村コード", "市区町村名", "都道府県コード", "都道府県名"]
+    rules:
+      市区町村コード: {type: str, pattern: "^[0-9]{5}$"}
+      都道府県コード: {type: str, pattern: "^[0-9]{2}$"}
+    deduplicate_on: ["市区町村コード"]
+    sort_keys: ["都道府県コード", "市区町村コード"]
+
+naming:
+  city_master:
+    filename_template: "city_master__all__${project.version}__${date:%Y%m%d}.csv"
+
+logging:
+  level: INFO

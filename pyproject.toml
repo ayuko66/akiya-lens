@@ -19,6 +19,7 @@ dependencies = [
     # "geopandas",
     # "shapely",
     # "pyproj"
+    "pyyaml>=6.0.2",
 ]
 
 [tool.uv]  # uv専用設定（任意）
