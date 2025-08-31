@@ -1,11 +1,10 @@
-\
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import argparse, io, sys
 from pathlib import Path
 import pandas as pd
 from typing import Dict, List
-sys.path.append('/mnt/data')
+#sys.path.append('/')
 from scripts.utils.config_loader import load_yaml, render_filename
 
 ENCODING_CANDIDATES = ["cp932", "shift_jis", "utf-8-sig", "utf-8"]
@@ -99,7 +98,7 @@ def main():
     colmap = (cfg.get("columns_map") or {}).get("city_master") or {}
     naming = (cfg.get("naming") or {}).get("city_master") or {}
     io_cfg = cfg.get("io") or {}
-    out_dir = io_cfg.get("output_dir", "/mnt/data/data/master")
+    out_dir = io_cfg.get("output_dir", "data/master")
     enc_out = io_cfg.get("encoding_out", "utf-8-sig")
 
     df = read_csv_auto(Path(args.src))
