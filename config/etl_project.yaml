@@ -28,6 +28,21 @@ datasets:
     output:
       filename_template: "housing_vacancy__wide__${project.version}__${date:%Y%m%d}.csv"
 
+  population_stats:
+    columns_map:
+      市区町村コード: ["地域 コード","標準地域コード"]
+      市区町村名: ["地域","市区町村"]
+      year_raw: ["調査年"]
+      総人口: ["A1101_総人口【人】"]
+      15歳未満人口: ["A1301_15歳未満人口【人】"]
+      15〜64歳人口: ["A1302_15〜64歳人口【人】"]
+      65歳以上人口: ["A1303_65歳以上人口【人】"]
+      出生数: ["A4101_出生数【人】"]
+      死亡数: ["A4200_死亡数【人】"]
+      転入者数: ["A5103_転入者数【人】"]
+      転出者数: ["A5104_転出者数【人】"]
+      世帯数: ["A7101_世帯数【世帯】"]
+
 study_regions:
   yatsugatake_alps:
     prefecture_codes: ["19","20","21","22"]
