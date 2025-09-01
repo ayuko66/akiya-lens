@@ -1,10 +1,11 @@
-\
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# 市区町村別の住宅・空き家データCSVを読み込み、空き家率を計算して整形。
 import argparse, io, sys
 from pathlib import Path
 import pandas as pd
-#sys.path.append("/mnt/data")
+
+# sys.path.append("/mnt/data")
 from scripts.utils.config_loader import load_yaml, render_filename
 import re
 import unicodedata
@@ -18,6 +19,7 @@ def detect_header_row(path: Path) -> int:
                 return i
     return 0
 
+
 def _normalize_colname(col: str) -> str:
     # 全角→半角, NFKCで正規化
     s = unicodedata.normalize("NFKC", str(col))
@@ -28,6 +30,7 @@ def _normalize_colname(col: str) -> str:
     # よくある表記ゆれを寄せる
     # 例: "地域コード" と "地域 コード" は同一化済み（空白除去で同じになる）
     return s
+
 
 def _build_alias_map(colmap: dict) -> dict:
     alias_to_std = {}
@@ -54,6 +57,7 @@ def _build_alias_map(colmap: dict) -> dict:
         alias_to_std[_normalize_colname(k)] = v
     return alias_to_std
 
+
 def _smart_rename(df: pd.DataFrame, alias_to_std: dict) -> pd.DataFrame:
     # 正規化キーでの rename
     ren = {}
@@ -69,26 +73,39 @@ def _smart_rename(df: pd.DataFrame, alias_to_std: dict) -> pd.DataFrame:
     # 追加フォールバック：正規化名で部分一致
     if need_code:
         cand_code = [
-            c for c in df.columns
+            c
+            for c in df.columns
             if ("コード" in c and any(k in c for k in ["地域", "全国", "市区町村"]))
         ]
         if not cand_code:
             # 正規化で再探索
             cands = [c for c in df.columns if "コード" in c]
-            cand_code = [c for c in cands if any(s in _normalize_colname(c) for s in ["地域","全国都道府県市区町村","市区町村"])]
+            cand_code = [
+                c
+                for c in cands
+                if any(
+                    s in _normalize_colname(c)
+                    for s in ["地域", "全国都道府県市区町村", "市区町村"]
+                )
+            ]
         if cand_code:
             df2 = df2.rename(columns={cand_code[0]: "市区町村コード"})
 
     if need_name:
         cand_name = [
-            c for c in df.columns
-            if any(k in c for k in ["地域", "市区町村", "団体名", "全国、都道府県、市区町村"])
+            c
+            for c in df.columns
+            if any(
+                k in c
+                for k in ["地域", "市区町村", "団体名", "全国、都道府県、市区町村"]
+            )
         ]
         cand_name = [c for c in cand_name if c != df2.get("市区町村コード", "___")]
         if cand_name:
             df2 = df2.rename(columns={cand_name[0]: "市区町村名"})
 
     return df2
+
 
 def load_estat_table(path: Path, year: int, colmap: dict) -> pd.DataFrame:
     header_row = detect_header_row(path)
@@ -99,19 +116,20 @@ def load_estat_table(path: Path, year: int, colmap: dict) -> pd.DataFrame:
     df = _smart_rename(df, alias_to_std)
 
     # 2) 必須列チェック（ここで見つからなければ詳細を表示して落とす）
-    need = ["市区町村コード","市区町村名","総数","空き家"]
+    need = ["市区町村コード", "市区町村名", "総数", "空き家"]
     miss = [c for c in need if c not in df.columns]
     if miss:
         print("ファイル内の列名:", list(df.columns))
         raise ValueError(f"必要列が見つかりません: {miss} in {path.name}")
 
     # 3) 数値整形
-    for c in ["総数","空き家"]:
+    for c in ["総数", "空き家"]:
         df[c] = (
-            df[c].astype(str)
-                 .str.replace(",", "", regex=False)
-                 .replace({"-": None, "": None})
-                 .astype(float)
+            df[c]
+            .astype(str)
+            .str.replace(",", "", regex=False)
+            .replace({"-": None, "": None})
+            .astype(float)
         )
     # 4) コードは5桁ゼロ埋め
     df["市区町村コード"] = df["市区町村コード"].astype(str).str.zfill(5)
@@ -121,11 +139,11 @@ def load_estat_table(path: Path, year: int, colmap: dict) -> pd.DataFrame:
     df = df[df["市区町村コード"].str[-3:] != "000"]
 
     df["year"] = int(year)
-    return df[["市区町村コード","市区町村名","総数","空き家","year"]]
+    return df[["市区町村コード", "市区町村名", "総数", "空き家", "year"]]
 
 
 def main():
-    
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
     ap.add_argument("--region", default="all")
@@ -137,15 +155,14 @@ def main():
     colmap = ds.get("columns_map", {})
     raw_dir = Path(cfg["io"]["raw_dir"])
     processed_dir = Path(cfg["io"]["processed_dir"])
-    enc_out = cfg["io"].get("encoding_out","utf-8-sig")
+    enc_out = cfg["io"].get("encoding_out", "utf-8-sig")
 
     frames = []
     for y, fname in ds["sources"].items():
-        frames.append(load_estat_table(raw_dir/fname, int(y), colmap))
+        frames.append(load_estat_table(raw_dir / fname, int(y), colmap))
     tall = pd.concat(frames, ignore_index=True)
 
-
-    master_spec = cfg["join"]["city_master_path"]   # パターン or 具体ファイル
+    master_spec = cfg["join"]["city_master_path"]  # パターン or 具体ファイル
     paths = sorted(glob(master_spec))
     if not paths:
         raise FileNotFoundError(f"市区町村マスタが見つかりません: {master_spec}")
@@ -156,21 +173,23 @@ def main():
     master["市区町村コード"] = master["市区町村コード"].astype(str).str.zfill(5)
     master["都道府県コード"] = master["都道府県コード"].astype(str).str.zfill(2)
 
-    tall = tall.merge(master, on=["市区町村コード","市区町村名"], how="left")
+    tall = tall.merge(master, on=["市区町村コード", "市区町村名"], how="left")
 
     tall["空き家率"] = (tall["空き家"] / tall["総数"] * 100).round(4)
 
     wide = tall.pivot_table(
-        index=["市区町村コード","市区町村名","都道府県コード","都道府県名"],
+        index=["市区町村コード", "市区町村名", "都道府県コード", "都道府県名"],
         columns="year",
-        values=["総数","空き家","空き家率"],
-        aggfunc="sum"
+        values=["総数", "空き家", "空き家率"],
+        aggfunc="sum",
     )
-    wide.columns = [f"{a}_{b}" for a,b in wide.columns]
+    wide.columns = [f"{a}_{b}" for a, b in wide.columns]
     wide = wide.reset_index()
 
     wide["空き家率_2023"] = wide["空き家率_2023"].round(2)
-    wide["空き家_増加率_5年_%"] = ((wide["空き家_2023"] - wide["空き家_2018"]) / wide["空き家_2018"]) * 100
+    wide["空き家_増加率_5年_%"] = (
+        (wide["空き家_2023"] - wide["空き家_2018"]) / wide["空き家_2018"]
+    ) * 100
     wide["空き家率_差分_5年_pt"] = wide["空き家率_2023"] - wide["空き家率_2018"]
 
     region_cfg = cfg.get("study_regions", {}).get(args.region, {})
@@ -188,6 +207,7 @@ def main():
     wide.to_csv(out_path, index=False, encoding=enc_out)
     print(f"✅ 出力: {out_path}  形状={wide.shape}")
     print(wide.head(10).to_string(index=False))
+
 
 if __name__ == "__main__":
     main()
