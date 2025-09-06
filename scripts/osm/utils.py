@@ -4,22 +4,34 @@ from pyproj import Geod
 geod = Geod(ellps="WGS84")
 
 
-def build_poi_query(qid: str, tag: str) -> str:
+def build_poi_query(qid: str, tag_expr: str) -> str:
     """特定の行政区画内にある施設（POI: Point of Interest）を検索するためのOverpass APIクエリ生成
-         qid: 行政区画のWikidata ID ("Q1766" など)
-         tag: 探したい施設の種類を示すOSMのタグ "amenity"="school" , "shop"="convenience" など
-    処理のながれ：
-      POIタグに応じたOverpassクエリを返す
-      qid を使って、まず行政区画のエリアを特定
-       → エリア（area.a）内にある、指定された tag を持つ OSM の要素（nwr - ノード、ウェイ、リレーション）を探す
-       → out ids qt; は、詳細なデータではなくIDだけを返すように指示
-       → クエリ文字列を返却
+    
+    Parameters
+    ----------
+    qid: str
+        行政区画のWikidata ID ("Q1766" など)
+    tag_expr: str
+        探したい施設を表すOSMのタグ式。例: '["amenity"="school"]'
+
+    Notes
+    -----
+    - ``tag_expr`` には Overpass API のタグ指定式全体を渡す。
+      ``build_poi_query`` 内では括弧を追加しないため、呼び出し側で
+      先頭と末尾の ``[]`` を含めた形で指定する。
+
+    処理の流れ:
+      1. ``qid`` を使って行政区画のエリアを特定
+      2. そのエリア内にある ``tag_expr`` を満たす OSM の要素
+         (node/way/relation) を取得
+      3. 詳細データではなく ID のみを返す ``out ids qt;`` を指定
     """
+
     return f"""
     [out:json][timeout:180];
     rel["wikidata"="{qid}"]["boundary"="administrative"]->.rel;
     area.rel->.a;
-    nwr[{tag}](area.a);
+    nwr{tag_expr}(area.a);
     out ids qt;
     """
 
