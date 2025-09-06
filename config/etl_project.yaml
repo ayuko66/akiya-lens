@@ -8,7 +8,7 @@ io:
   raw_dir: data/raw
   processed_dir: data/processed
   encoding_in_candidates: ["utf-8-sig","utf-8","cp932","shift_jis"]
-  encoding_out: utf-8-sig
+  encoding_out: utf-8
 
 datasets:
   # 空き家率

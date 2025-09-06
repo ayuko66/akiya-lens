@@ -15,10 +15,11 @@ dependencies = [
     "shap",
     "folium",
     "pydeck",
-    # 地理系（必要になったらコメント外す）
+    "osm2geojson",
+    "requests",
     # "geopandas",
     # "shapely",
-    # "pyproj"
+    "pyproj", # 座標変換
     "pyyaml>=6.0.2",
 ]
 
