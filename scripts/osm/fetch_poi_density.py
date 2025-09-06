@@ -2,19 +2,61 @@
 # -*- coding: utf-8 -*-
 
 """
-市区町村ごとに OSM の駅/スーパー/学校/病院(＋任意でクリニック) 件数を集計し、
+市区町村ごとに OSM の駅/スーパー/学校/病院（＋任意でクリニック）件数を集計し、
 面積(km^2)で割った密度をCSV出力するCLI。
 
 前提:
 - scripts/osm/api.py : overpass(), wikidata_qid_from_code(), fetch_boundary_geojson()
 - scripts/osm/utils.py: geodesic_area_km2(), build_poi_query()
 
-使い方例:
-  python scripts/osm/fetch_poi_density.py \
-    --in data/master/city_master__all__v1__preview.csv \
-    --out data/processed/osm_density_nagano_yamanashi_gifu_shizuoka.csv \
-    --include-public-transport-stations \
-    --include-clinics
+実行例:
+- 基本（キャッシュ有効, TTLデフォルト=168時間）
+    python scripts/osm/fetch_poi_density.py \
+      --in data/master/city_master__all__v1__preview.csv \
+      --out data/processed/osm_density.csv \
+      --config config/etl_project.yaml
+
+- 駅の `public_transport=station` と クリニックを合算
+    python scripts/osm/fetch_poi_density.py \
+      --in data/master/city_master__all__v1__preview.csv \
+      --out data/processed/osm_density_with_pt_clinic.csv \
+      --config config/etl_project.yaml \
+      --include-public-transport-stations \
+      --include-clinics
+
+- キャッシュディレクトリの指定と POI件数TTLを12時間に短縮
+    python scripts/osm/fetch_poi_density.py \
+      --in data/master/city_master__all__v1__preview.csv \
+      --out data/processed/osm_density.csv \
+      --config config/etl_project.yaml \
+      --cache-dir ./mycache \
+      --poi-cache-ttl-hours 12
+
+- キャッシュを使わずに実行（最新取得）
+    python scripts/osm/fetch_poi_density.py \
+      --in data/master/city_master__all__v1__preview.csv \
+      --out data/processed/osm_density_fresh.csv \
+      --config config/etl_project.yaml \
+      --no-cache
+
+キャッシュ仕様:
+- 目的: ネットワーク往復と重い計算（境界取得＋面積計算、POI件数取得）を再利用して高速化。
+- 配置（デフォルト `data/cache`）:
+  - code→QID: `qid_by_code.json`
+  - QID→面積(km^2): `area_km2_by_qid.json`
+  - 行政境界GeoJSON: `boundary_geojson/{QID}.geojson`
+  - POI件数: `poi_counts.json`
+- POI件数キャッシュ:
+  - キー: 「QID | カテゴリ名 | タグ集合（空白除去＋ソートして連結）」
+  - 値: `{ "count": <int>, "ts": <Epoch秒> }`
+  - TTL: `--poi-cache-ttl-hours`（既定 168h）。`0`以下で無効＝常に再取得。
+  - 一部カテゴリのみ未キャッシュ/期限切れの場合は、その分だけをOverpassへバッチ問い合わせ。
+- 無効化オプション:
+  - 全キャッシュ無効: `--no-cache`
+  - POI件数のみ無効: `--no-poi-cache`
+- 注意事項:
+  - OSM/Wikidataの更新はTTL内には反映されません。最新化したい場合はTTLを短くする/`--no-cache`で再取得/`data/cache`を削除してください。
+  - Overpassへの負荷を避けるため、クエリはカテゴリをまとめてバッチ実行し、礼儀的な待機を入れています。
 """
 
 from __future__ import annotations
@@ -196,8 +238,9 @@ def count_pois_batched(
     # クエリ構築
     blocks: List[str] = [
         "[out:json][timeout:180];",
-        f'rel["wikidata"="{qid}"]["boundary"="administrative"]->.rel;',
-        "area.rel->.a;",
+        f'rel["wikidata"="{qid}"]["boundary"="administrative"]->.r;',
+        "(.r;);",
+        "map_to_area -> .a;",
     ]
 
     # カテゴリごとに集合を作る
@@ -480,72 +523,28 @@ def main() -> None:
         hospital_tags = ['["amenity"="hospital"]']
         clinic_tags = ['["amenity"="clinic"]'] if args.include_clinics else []
 
-        print("  POIカウント中…（バッチ処理＋キャッシュ）")
+        print("  POIカウント中…（バッチ処理）")
         cat_tags: Dict[str, Iterable[str]] = {
             "stations": station_tags,
             "supermarkets": supermarket_tags,
             "schools": school_tags,
             "hospitals": hospital_tags + clinic_tags,
         }
-        # POI件数キャッシュ判定
-        cat_counts: Dict[str, int] = {}
-        pending: Dict[str, Iterable[str]] = {}
-        now_ts = time.time()
-        ttl_sec = max(0.0, float(args.poi_cache_ttl_hours)) * 3600.0
-
-        def _norm_tags(tags: Iterable[str]) -> list[str]:
-            return sorted([t.strip() for t in tags])
-
-        def _key(q: str, name: str, tags: Iterable[str]) -> str:
-            return f"{q}|{name}|" + ";".join(_norm_tags(tags))
-
-        use_poi_cache = cache_enabled and (not args.no_poi_cache)
-        if use_poi_cache:
-            for name, tags in cat_tags.items():
-                key = _key(qid, name, tags)
-                entry = poi_cache.get(key)
-                if not entry:
-                    pending[name] = tags
-                    continue
-                # TTL確認（tsが無い古い形式も許容して即使用）
-                ts = entry.get("ts") if isinstance(entry, dict) else None
-                count_val = entry.get("count") if isinstance(entry, dict) else None
-                if count_val is None and isinstance(entry, int):
-                    count_val = int(entry)
-                expired = False
-                if ttl_sec > 0 and ts is not None:
-                    expired = (now_ts - float(ts)) > ttl_sec
-                elif ttl_sec > 0 and ts is None:
-                    expired = True
-                if expired or count_val is None:
-                    pending[name] = tags
-                else:
-                    cat_counts[name] = int(count_val)
-        else:
-            pending = dict(cat_tags)
-
-        # 未キャッシュ分のみバッチ問い合わせ
-        if pending:
-            fetched = count_pois_batched(
-                qid,
-                session,
-                pending,
-                sleep_sec=args.sleep_sec,
-                retries=args.retries,
-            )
-            # キャッシュ更新
-            if use_poi_cache:
-                for name, tags in pending.items():
-                    key = _key(qid, name, tags)
-                    val = int(fetched.get(name, 0))
-                    poi_cache[key] = {"count": val, "ts": now_ts}
-                _write_json(poi_cache_path, poi_cache)
-            cat_counts.update(fetched)
-        # ここまでで全カテゴリの件数が揃う
+        cat_counts = count_pois_batched(
+            qid,
+            session,
+            cat_tags,
+            sleep_sec=args.sleep_sec,
+            retries=args.retries,
+        )
         stations = cat_counts.get("stations", 0)
         supermarkets = cat_counts.get("supermarkets", 0)
         schools = cat_counts.get("schools", 0)
         hospitals = cat_counts.get("hospitals", 0)
+
+        print(
+            f"stations: {stations}, supermarkets: {supermarkets}, schools: {schools}, hospitals: {hospitals}"
+        )
 
         # 4) 密度計算
         dens = {
