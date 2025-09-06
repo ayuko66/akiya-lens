@@ -20,6 +20,7 @@
 from __future__ import annotations
 import argparse
 import csv
+import json
 import sys
 import time
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -56,6 +57,28 @@ def _get_col_value(row: dict, aliases: list[str]) -> str | None:
         if s and s.lower() != "nan":  # 文字列 "nan" を弾く
             return s
     return None
+
+
+def _ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def _read_json(path: Path) -> Optional[dict]:
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _write_json(path: Path, data: dict) -> None:
+    _ensure_dir(path.parent)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(path)
 
 
 def read_municipalities(
@@ -156,6 +179,92 @@ def count_pois(
     return count_unique_ids(all_elems)
 
 
+def count_pois_batched(
+    qid: str,
+    session,
+    categories: Dict[str, Iterable[str]],
+    sleep_sec: float = 0.8,
+    retries: int = 3,
+) -> Dict[str, int]:
+    """
+    複数カテゴリ（キー: カテゴリ名 → 値: タグ式の配列）をまとめて1回のOverpassで件数取得。
+
+    - 各カテゴリはサーバ側で集合和を取り（重複を排除）、`out count;` で総数を返す。
+    - `categories` は順序を保持する（Python 3.7+ の dict は挿入順保持）。
+    - 返り値は {カテゴリ名: 件数}。
+    """
+    # クエリ構築
+    blocks: List[str] = [
+        "[out:json][timeout:180];",
+        f'rel["wikidata"="{qid}"]["boundary"="administrative"]->.rel;',
+        "area.rel->.a;",
+    ]
+
+    # カテゴリごとに集合を作る
+    for key, tag_exprs in categories.items():
+        blocks.append("(")
+        for tag in tag_exprs:
+            blocks.append(f"  nwr{tag}(area.a);")
+        blocks.append(f")->.{key};")
+
+    # 各カテゴリのカウントを順に出力
+    for key in categories.keys():
+        blocks.append(f"(.{key};);")
+        blocks.append("out count;")
+
+    query = "\n".join(blocks)
+
+    last_err: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        try:
+            data = overpass(query, session, sleep_sec=sleep_sec)
+            break
+        except Exception as e:
+            last_err = e
+            time.sleep(sleep_sec * attempt)
+    else:
+        raise RuntimeError(f"Overpass失敗(バッチ): qid={qid}, err={last_err}")
+
+    # レスポンスから count を順に取り出し、カテゴリ順に対応付け
+    counts: List[int] = []
+    for el in data.get("elements", []):
+        if el.get("type") != "count":
+            continue
+        tags = el.get("tags", {}) or {}
+        # 代表的な2パターンに対応: total があればそれを使用、なければ nodes+ways+relations を合算
+        total = tags.get("total")
+        if total is not None:
+            try:
+                counts.append(int(total))
+            except Exception:
+                # 念のためフォールバック
+                s = 0
+                for k in ("nodes", "ways", "relations", "count"):
+                    v = tags.get(k)
+                    if v is not None:
+                        try:
+                            s += int(v)
+                        except Exception:
+                            pass
+                counts.append(s)
+        else:
+            s = 0
+            for k in ("nodes", "ways", "relations", "count"):
+                v = tags.get(k)
+                if v is not None:
+                    try:
+                        s += int(v)
+                    except Exception:
+                        pass
+            counts.append(s)
+
+    # カテゴリ数に満たない場合は0で埋める
+    if len(counts) < len(categories):
+        counts.extend([0] * (len(categories) - len(counts)))
+
+    return {name: counts[i] for i, name in enumerate(categories.keys())}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -190,6 +299,27 @@ def main() -> None:
     ap.add_argument(
         "--retries", type=int, default=3, help="Overpass/Wikidata のリトライ回数"
     )
+    ap.add_argument(
+        "--cache-dir",
+        default="data/cache",
+        help="ローカルキャッシュ格納ディレクトリ（デフォルト: data/cache）",
+    )
+    ap.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="ローカルキャッシュを使わない",
+    )
+    ap.add_argument(
+        "--no-poi-cache",
+        action="store_true",
+        help="POI件数キャッシュを使わない",
+    )
+    ap.add_argument(
+        "--poi-cache-ttl-hours",
+        type=float,
+        default=168.0,
+        help="POI件数キャッシュのTTL（時間）。0以下で無効（常に再取得）",
+    )
     args = ap.parse_args()
 
     # 設定ファイル読み込み
@@ -223,6 +353,28 @@ def main() -> None:
 
     session = get_session()
 
+    # ローカルキャッシュ（QID, 面積, POI件数）
+    cache_enabled = not args.no_cache
+    if cache_enabled:
+        cache_dir = Path(args.cache_dir)
+        _ensure_dir(cache_dir)
+        boundary_dir = cache_dir / "boundary_geojson"
+        _ensure_dir(boundary_dir)
+        qid_cache_path = cache_dir / "qid_by_code.json"
+        area_cache_path = cache_dir / "area_km2_by_qid.json"
+        poi_cache_path = cache_dir / "poi_counts.json"
+        qid_cache: Dict[str, str] = _read_json(qid_cache_path) or {}
+        area_cache: Dict[str, float] = _read_json(area_cache_path) or {}
+        poi_cache: Dict[str, dict] = _read_json(poi_cache_path) or {}
+    else:
+        boundary_dir = None  # type: ignore
+        qid_cache_path = None  # type: ignore
+        area_cache_path = None  # type: ignore
+        poi_cache_path = None  # type: ignore
+        qid_cache = {}
+        area_cache = {}
+        poi_cache = {}
+
     for idx, m in enumerate(rows, start=1):
         code = m["code"]
         name = m["name"]
@@ -233,56 +385,84 @@ def main() -> None:
 
         # 1) QID解決（CSVにwikidata列があればそれを優先）
         if not qid:
-            qid = None
-            last_err: Optional[Exception] = None
-            # Wikidata QIDを取得
-            for attempt in range(1, args.retries + 1):
-                try:
-                    qid = wikidata_qid_from_code(code, session)
-                    if qid:
-                        last_err = None  # 成功したらエラーをクリア
-                        break
-                except Exception as e:
-                    last_err = e
-                    print(
-                        f"  QID取得試行 {attempt}/{args.retries} でエラー: {repr(e)}",
-                        file=sys.stderr,
-                    )
-                    time.sleep(0.5 * attempt)  # エラー時にのみ待機
+            # キャッシュに存在すれば使用
+            if cache_enabled and code in qid_cache:
+                qid = qid_cache.get(code) or ""
             if not qid:
-                if last_err:
-                    print(
-                        f"  QID解決失敗（スキップ）: code={code}, err={last_err}",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"  QIDが見つかりませんでした（スキップ）: code={code}",
-                        file=sys.stderr,
-                    )
-                continue
+                qid = None
+                last_err: Optional[Exception] = None
+                # Wikidata QIDを取得
+                for attempt in range(1, args.retries + 1):
+                    try:
+                        qid = wikidata_qid_from_code(code, session)
+                        if qid:
+                            last_err = None  # 成功したらエラーをクリア
+                            break
+                    except Exception as e:
+                        last_err = e
+                        print(
+                            f"  QID取得試行 {attempt}/{args.retries} でエラー: {repr(e)}",
+                            file=sys.stderr,
+                        )
+                        time.sleep(0.5 * attempt)  # エラー時にのみ待機
+                if not qid:
+                    if last_err:
+                        print(
+                            f"  QID解決失敗（スキップ）: code={code}, err={last_err}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"  QIDが見つかりませんでした（スキップ）: code={code}",
+                            file=sys.stderr,
+                        )
+                    continue
+                # 成功時にキャッシュへ保存
+                if cache_enabled and qid:
+                    qid_cache[code] = qid
+                    _write_json(qid_cache_path, qid_cache)
         print(f"  QID={qid}")
 
-        # 2) 境界取得 → 面積計算
-        gj = None
-        last_err = None
-        # 地図データを取得し、市区町村の面積を計算
-        for attempt in range(1, args.retries + 1):
+        # 2) 境界取得 → 面積計算（キャッシュ利用）
+        area_km2: Optional[float] = None
+        if cache_enabled and qid in area_cache:
             try:
-                # 地図データ取得
-                gj = fetch_boundary_geojson(qid, session)
-                break
-            except Exception as e:
-                last_err = e
-                time.sleep(0.7 * attempt)
-        if gj is None:
-            print(
-                f"  ⚠ 境界取得失敗（スキップ）: qid={qid}, err={last_err}",
-                file=sys.stderr,
-            )
-            continue
-        # 面積を計算
-        area_km2 = geodesic_area_km2(gj)
+                area_km2 = float(area_cache[qid])
+            except Exception:
+                area_km2 = None
+        if area_km2 is None:
+            gj = None
+            last_err = None
+            # 地図データを取得し、市区町村の面積を計算
+            for attempt in range(1, args.retries + 1):
+                try:
+                    # 地図データ取得
+                    gj = fetch_boundary_geojson(qid, session)
+                    break
+                except Exception as e:
+                    last_err = e
+                    time.sleep(0.7 * attempt)
+            if gj is None:
+                print(
+                    f"  ⚠ 境界取得失敗（スキップ）: qid={qid}, err={last_err}",
+                    file=sys.stderr,
+                )
+                continue
+            # 面積を計算
+            area_km2 = geodesic_area_km2(gj)
+            # キャッシュへ保存
+            if cache_enabled and area_km2 > 0:
+                area_cache[qid] = area_km2
+                _write_json(area_cache_path, area_cache)
+                # GeoJSONも任意で保存（存在しない場合のみ）
+                try:
+                    if boundary_dir is not None:
+                        out_gj = boundary_dir / f"{qid}.geojson"
+                        if not out_gj.exists():
+                            with open(out_gj, "w", encoding="utf-8") as f:
+                                json.dump(gj, f, ensure_ascii=False)
+                except Exception:
+                    pass
         if area_km2 <= 0:
             print(f"  ⚠ 面積が0（スキップ）: qid={qid}", file=sys.stderr)
             continue
@@ -300,27 +480,72 @@ def main() -> None:
         hospital_tags = ['["amenity"="hospital"]']
         clinic_tags = ['["amenity"="clinic"]'] if args.include_clinics else []
 
-        print("  POIカウント中…")
-        stations = count_pois(
-            qid, session, station_tags, sleep_sec=args.sleep_sec, retries=args.retries
-        )
-        supermarkets = count_pois(
-            qid,
-            session,
-            supermarket_tags,
-            sleep_sec=args.sleep_sec,
-            retries=args.retries,
-        )
-        schools = count_pois(
-            qid, session, school_tags, sleep_sec=args.sleep_sec, retries=args.retries
-        )
-        hospitals = count_pois(
-            qid,
-            session,
-            hospital_tags + clinic_tags,
-            sleep_sec=args.sleep_sec,
-            retries=args.retries,
-        )
+        print("  POIカウント中…（バッチ処理＋キャッシュ）")
+        cat_tags: Dict[str, Iterable[str]] = {
+            "stations": station_tags,
+            "supermarkets": supermarket_tags,
+            "schools": school_tags,
+            "hospitals": hospital_tags + clinic_tags,
+        }
+        # POI件数キャッシュ判定
+        cat_counts: Dict[str, int] = {}
+        pending: Dict[str, Iterable[str]] = {}
+        now_ts = time.time()
+        ttl_sec = max(0.0, float(args.poi_cache_ttl_hours)) * 3600.0
+
+        def _norm_tags(tags: Iterable[str]) -> list[str]:
+            return sorted([t.strip() for t in tags])
+
+        def _key(q: str, name: str, tags: Iterable[str]) -> str:
+            return f"{q}|{name}|" + ";".join(_norm_tags(tags))
+
+        use_poi_cache = cache_enabled and (not args.no_poi_cache)
+        if use_poi_cache:
+            for name, tags in cat_tags.items():
+                key = _key(qid, name, tags)
+                entry = poi_cache.get(key)
+                if not entry:
+                    pending[name] = tags
+                    continue
+                # TTL確認（tsが無い古い形式も許容して即使用）
+                ts = entry.get("ts") if isinstance(entry, dict) else None
+                count_val = entry.get("count") if isinstance(entry, dict) else None
+                if count_val is None and isinstance(entry, int):
+                    count_val = int(entry)
+                expired = False
+                if ttl_sec > 0 and ts is not None:
+                    expired = (now_ts - float(ts)) > ttl_sec
+                elif ttl_sec > 0 and ts is None:
+                    expired = True
+                if expired or count_val is None:
+                    pending[name] = tags
+                else:
+                    cat_counts[name] = int(count_val)
+        else:
+            pending = dict(cat_tags)
+
+        # 未キャッシュ分のみバッチ問い合わせ
+        if pending:
+            fetched = count_pois_batched(
+                qid,
+                session,
+                pending,
+                sleep_sec=args.sleep_sec,
+                retries=args.retries,
+            )
+            # キャッシュ更新
+            if use_poi_cache:
+                for name, tags in pending.items():
+                    key = _key(qid, name, tags)
+                    val = int(fetched.get(name, 0))
+                    poi_cache[key] = {"count": val, "ts": now_ts}
+                _write_json(poi_cache_path, poi_cache)
+            cat_counts.update(fetched)
+        # ここまでで全カテゴリの件数が揃う
+        stations = cat_counts.get("stations", 0)
+        supermarkets = cat_counts.get("supermarkets", 0)
+        schools = cat_counts.get("schools", 0)
+        hospitals = cat_counts.get("hospitals", 0)
 
         # 4) 密度計算
         dens = {

@@ -6,7 +6,6 @@ geod = Geod(ellps="WGS84")
 
 def build_poi_query(qid: str, tag_expr: str) -> str:
     """特定の行政区画内にある施設（POI: Point of Interest）を検索するためのOverpass APIクエリ生成
-    
     Parameters
     ----------
     qid: str
