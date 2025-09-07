@@ -8,16 +8,15 @@ Stage2 (fixed): point-level CSV -> city-year median aggregation
 from __future__ import annotations
 import argparse, math
 from pathlib import Path
+import sys
 import pandas as pd
 
-try:
-    from config_loader import load_config
-except Exception:
-    import yaml
+# Ensure project root is on sys.path when run as a file
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-    def load_config(path: str):
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+from scripts.utils.config_loader import load_yaml
 
 
 def main():
@@ -30,7 +29,7 @@ def main():
     ap.add_argument("--target_year", type=int, default=2023)
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = load_yaml(args.config)
     enc = cfg.get("io", {}).get("encoding_out", "utf-8-sig")
 
     df = pd.read_csv(args.in_csv, dtype={"市区町村コード": "string"}, encoding=enc)

@@ -9,6 +9,10 @@ def load_yaml(path: str | Path) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+# Backward-compat alias used by some scripts
+def load_config(path: str | Path) -> dict:
+    return load_yaml(path)
+
 def render_filename(template: str, project: dict) -> str:
     t = Template(template)
     s = t.safe_substitute({"project.version": project.get("version", "v1")})

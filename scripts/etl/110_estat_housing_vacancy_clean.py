@@ -3,6 +3,11 @@
 # 市区町村別の住宅・空き家データCSVを読み込み、空き家率を計算して整形。
 import argparse, io, sys
 from pathlib import Path
+
+# Ensure project root is on sys.path when run as a file
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 import pandas as pd
 
 # sys.path.append("/mnt/data")

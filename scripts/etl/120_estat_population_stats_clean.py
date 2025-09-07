@@ -9,8 +9,14 @@ FEI_CITY_2509.csv（社会・人口統計体系）から人口動態（2018, 202
 
 from pathlib import Path
 import argparse
+import sys
 import re
 import pandas as pd
+
+# Ensure project root is on sys.path when run as a file
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.utils.config_loader import load_yaml
 

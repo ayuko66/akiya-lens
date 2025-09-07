@@ -67,27 +67,23 @@ import sys
 import time
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 from pathlib import Path
+import sys
+
+# Ensure project root is on sys.path when run as a file
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # 同一プロジェクト内import（パスはプロジェクト構成に合わせて調整）
-from api import (
+from scripts.osm.api import (
     get_session,
     overpass,
     wikidata_qid_from_code,
     fetch_boundary_geojson,
 )
-from utils import geodesic_area_km2, build_poi_query
+from scripts.osm.utils import geodesic_area_km2, build_poi_query
 
-
-try:
-    # プロジェクト共通のユーティリティを優先
-    from scripts.utils.config_loader import load_yaml
-except ImportError:
-    # 見つからない場合のフォールバック
-    import yaml
-
-    def load_yaml(path: str | Path):
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+from scripts.utils.config_loader import load_yaml
 
 
 def _get_col_value(row: dict, aliases: list[str]) -> str | None:

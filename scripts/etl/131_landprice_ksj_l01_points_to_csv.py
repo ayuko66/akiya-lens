@@ -11,18 +11,17 @@
 
 import argparse, re, glob
 from pathlib import Path
+import sys
 import xml.etree.ElementTree as ET
 import pandas as pd
 
-# --- config loader (project's util or fallback) ---
-try:
-    from config_loader import load_config as _load_yaml
-except Exception:
-    import yaml
+# Ensure project root is on sys.path when run as a file
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-    def _load_yaml(path: str):
-        with open(path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
+# --- config loader (project's util) ---
+from scripts.utils.config_loader import load_yaml as _load_yaml
 
 
 def localname(tag: str) -> str:
