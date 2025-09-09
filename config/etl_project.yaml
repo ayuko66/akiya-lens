@@ -47,26 +47,10 @@ datasets:
   landprice_ksj_l01:
     # 年ごとのソース（必要なら明示。県ごと複数XMLならglobで指定）
     sources:
-      "2018": "data/raw/landprice/2018/L01-*.xml"
-      "2023": "data/raw/landprice/2023/L01-*.xml"
+      "2018": "data/raw/landprice/2018/L01-*.geojson"
+      "2023": "data/raw/landprice/2023/L01-*.geojson"
 
-    # KSJ L01 既定の名前空間（変更時はここだけ直せばOK）
-    namespaces:
-      app: "http://nlftp.mlit.go.jp/ksj/schemas/ksj-app"
-      gml: "http://schemas.opengis.net/gml/3.2.1/gml.xsd"
-      xlink: "http://www.w3.org/1999/xlink"
-
-    # 1レコード（標準地点）のルート
-    item_xpath: ".//app:LandPrice"
-
-    # 列名統一（日本語）と、そのXPath定義
-    fields:
-      year: "app:year/gml:TimeInstant/gml:timePosition"
-      市区町村コード: "app:administrativeAreaCode"
-      市区町村名: "app:cityName"
-      価格_円m2: "app:postedLandPrice"
-      利用現況: "app:currentUse"
-      座標_pos: "app:position/gml:Point/gml:pos"
+    # GeoJSON入出力に移行（XML用のnamespace/xpathは不要）
 
     # 出力ファイル（テンプレ）
     output:

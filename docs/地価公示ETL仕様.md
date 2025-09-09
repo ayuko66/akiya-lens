@@ -7,7 +7,7 @@
 
 ## TL;DR
 
-* 入力：国交省 **KSJ L01**（地価公示）XML（2018・2023、都道府県別ファイル）。
+* 入力：国交省 **KSJ L01**（地価公示）GeoJSON（2018・2023、都道府県別ファイル）。
 * 出力：
 
   1. **points**（住宅のみ・座標つき）
@@ -36,15 +36,15 @@ config/
 data/
   raw/
     landprice/
-      2018/L01-*.xml
-      2023/L01-*.xml
+      2018/L01-*.geojson
+      2023/L01-*.geojson
   processed/
     131_landprice_points__v1.csv
     132_landprice_residential_median__long__v1.csv
     132_landprice_residential_median__wide__v1.csv
 scripts/
   etl/
-    131_landprice_ksj_l01_points_to_csv.py      # Stage1: XML → points
+    131_landprice_ksj_l01_points_to_csv.py      # Stage1: GeoJSON → points
     132_landprice_ksj_l01_median_by_city.py     # Stage2: points → long / wide
 ```
 
@@ -60,34 +60,22 @@ io:
 datasets:
   landprice_ksj_l01:
     sources:
-      "2018": "data/raw/landprice/2018/L01-*.xml"
-      "2023": "data/raw/landprice/2023/L01-*.xml"
-    namespaces:
-      app: "http://nlftp.mlit.go.jp/ksj/schemas/ksj-app"
-      gml: "http://schemas.opengis.net/gml/3.2.1/gml.xsd"
-      xlink: "http://www.w3.org/1999/xlink"
-    item_xpath: ".//app:LandPrice"
-    fields:
-      year: "app:year/gml:TimeInstant/gml:timePosition"
-      市区町村コード: "app:administrativeAreaCode"
-      市区町村名: "app:cityName"
-      価格_円m2: "app:postedLandPrice"
-      利用現況: "app:currentUse"
-      座標_pos: "app:position/gml:Point/gml:pos"
+      "2018": "data/raw/landprice/2018/L01-*.geojson"
+      "2023": "data/raw/landprice/2023/L01-*.geojson"
 
 study_regions:
   yatsugatake_alps:
     prefecture_codes: ["19","20","21","22"]
 ```
 
-> ※ Stage1 は YAML の名前空間を尊重しつつ、\**実装側で `xlink:href` 解決と year のフォールバック（ファイル名 L01-18\_* → 2018 など）を内包\*\*しています。
+> ※ Stage1 は GeoJSON の `properties` を正規化し、2018/2023 の項目差（市区町村コード・利用現況の位置など）を内部で吸収します。
 
 ---
 
-## 4. Stage1：XML → points（住宅のみ・座標つき）
+## 4. Stage1：GeoJSON → points（住宅のみ・座標つき）
 
 **スクリプト**：`scripts/etl/131_landprice_ksj_l01_points_to_csv.py`
-**入力**：`data/raw/landprice/{2018,2023}/L01-*.xml`
+**入力**：`data/raw/landprice/{2018,2023}/L01-*.geojson`
 **出力**：`data/processed/131_landprice_points__v1.csv`
 
 ### 4.1 実行例
@@ -95,7 +83,7 @@ study_regions:
 ```bash
 PYTHONPATH=. python scripts/etl/131_landprice_ksj_l01_points_to_csv.py \
   --config config/etl_project.yaml \
-  --xml_glob "data/raw/landprice/2018/L01-*.xml" "data/raw/landprice/2023/L01-*.xml" \
+  --geojson_glob "data/raw/landprice/2018/L01-*.geojson" "data/raw/landprice/2023/L01-*.geojson" \
   --out_csv data/processed/131_landprice_points__v1.csv \
   --region yatsugatake_alps
 ```
@@ -103,17 +91,11 @@ PYTHONPATH=. python scripts/etl/131_landprice_ksj_l01_points_to_csv.py \
 ### 4.2 抽出・処理仕様
 
 * **フィルタ**：`利用現況 = 住宅`
-* **年（year）**：
-
-  1. `app:year/gml:TimeInstant/gml:timePosition`
-  2. `app:year/gml:timePosition`
-  3. `app:year`（数値）
-  4. **ファイル名から推定**：`L01-18_*.xml → 2018`, `L01-23_*.xml → 2023`
-* **座標**：
-
-  * まず `app:position/gml:Point/gml:pos`（インライン）
-  * だめなら `app:position/@xlink:href="#ptX"` を **`gml:Point[@gml:id="ptX"]/gml:pos` に解決**
-  * GML 名前空間差は**ローカル名ベース**で解釈（3.2/3.2.1 両対応）
+* **年（year）**：`properties.L01_005` を数値化（2018/2023 で共通）
+* **座標**：`geometry.type == "Point"` の `[lon, lat]` を採用
+* **項目差の吸収**：
+  * 市区町村コード・名：2018 は `L01_021`/`L01_022`、2023 は `L01_022`/`L01_023`
+  * 利用現況：2018 は `L01_025`、2023 は `L01_027`
 * **県コードフィルタ**：`--region` で指定。`市区町村コード` 先頭 2 桁と突合。
 * **出力カラム（日本語統一）**：
 
@@ -167,7 +149,7 @@ python scripts/etl/132_landprice_ksj_l01_median_by_city.py \
   * `year ∈ {2018, 2023}`, `利用現況 = 住宅`
   * `市区町村コード` は 5 桁
   * `価格_円m2 > 0`
-  * `緯度/経度` が **2018/2023 とも非欠損**（参照解決が効いていること）
+  * `緯度/経度` が **非欠損**（GeoJSON の Point から抽出）
 * **long**：
 
   * `標準地点数`, `住宅地価_中央値` が **points から再計算と一致**
@@ -255,4 +237,3 @@ rows=2503 years={2018: 1256, 2023: 1247} lat_nonnull=2503 lon_nonnull=2503
 |        | 住宅地価\_log中央値  | 住宅地価\_中央値の自然対数                    |
 | wide   | 住宅地価\_log差分   | `log中央値_2023 - log中央値_2018`       |
 |        | 住宅地価\_増減率\[%] | `(中央値_2023 / 中央値_2018 - 1) * 100` |
-
