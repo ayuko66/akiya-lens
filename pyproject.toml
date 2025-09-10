@@ -21,6 +21,8 @@ dependencies = [
     # "shapely",
     "pyproj", # 座標変換
     "pyyaml>=6.0.2",
+    "geopandas>=1.1.1",
+    "shapely>=2.1.1",
 ]
 
 [tool.uv]  # uv専用設定（任意）
