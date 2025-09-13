@@ -17,12 +17,12 @@
 
 ## 出力
 - CSV（指定パス `--out`）
-  - カラム
-    - `code`, `prefecture`, `name`, `wikidata`, `area_km2`
-    - `stations`, `stations_density_per_km2`
-    - `supermarkets`, `supermarkets_density_per_km2`
-    - `schools`, `schools_density_per_km2`
-    - `hospitals`, `hospitals_density_per_km2`
+  - カラム（日本語表記）
+    - 市区町村コード, 都道府県名, 市区町村名, Wikidata QID, 面積[km²]
+    - 駅件数, 駅密度[件/km²]
+    - スーパー件数, スーパー密度[件/km²]
+    - 学校件数, 学校密度[件/km²]
+    - 病院件数, 病院密度[件/km²]
 
 ## 実行例
 - 基本（キャッシュ有効, TTL既定=168時間）
@@ -119,4 +119,3 @@
 ## 変更履歴
 - v0.2: バッチ集計・ローカルキャッシュ（QID/面積/POI件数/TTL）を追加。
 - v0.1: 初版（単純集計）。
-

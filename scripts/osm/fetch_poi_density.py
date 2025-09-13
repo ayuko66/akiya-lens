@@ -572,19 +572,57 @@ def main() -> None:
         # Overpassへの配慮
         time.sleep(max(0.2, args.sleep_sec))
 
-    # 5) CSV 出力
+    # 5) CSV 出力（日本語カラム名に揃える）
     if not out_rows:
         print(
             "⚠ 出力0行。入力やネットワーク、タグを確認してください。", file=sys.stderr
         )
         sys.exit(2)
 
-    fieldnames = list(out_rows[0].keys())
+    # 出力カラムのマッピング（左: 内部キー → 右: 出力カラム名）
+    header_map = {
+        "code": "市区町村コード",
+        "prefecture": "都道府県名",
+        "name": "市区町村名",
+        "wikidata": "Wikidata QID",
+        "area_km2": "面積[km²]",
+        "stations": "駅件数",
+        "stations_density_per_km2": "駅密度[件/km²]",
+        "supermarkets": "スーパー件数",
+        "supermarkets_density_per_km2": "スーパー密度[件/km²]",
+        "schools": "学校件数",
+        "schools_density_per_km2": "学校密度[件/km²]",
+        "hospitals": "病院件数",
+        "hospitals_density_per_km2": "病院密度[件/km²]",
+    }
+
+    # 明示的な出力順（デフォルトのカラム順）
+    ordered_internal_keys = [
+        "code",
+        "prefecture",
+        "name",
+        "wikidata",
+        "area_km2",
+        "stations",
+        "stations_density_per_km2",
+        "supermarkets",
+        "supermarkets_density_per_km2",
+        "schools",
+        "schools_density_per_km2",
+        "hospitals",
+        "hospitals_density_per_km2",
+    ]
+
+    # 出力用の日本語ヘッダー
+    fieldnames = [header_map[k] for k in ordered_internal_keys]
+
     with open(args.out_csv, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in out_rows:
-            w.writerow(r)
+            # 内部キー → 日本語キーへ変換
+            out_ja = {header_map[k]: r.get(k) for k in ordered_internal_keys}
+            w.writerow(out_ja)
 
     print(f"\n✅ Done: {args.out_csv}  ({len(out_rows)} rows)")
     sys.exit(0)
