@@ -121,14 +121,24 @@ def load_estat_table(path: Path, year: int, colmap: dict) -> pd.DataFrame:
     df = _smart_rename(df, alias_to_std)
 
     # 2) 必須列チェック（ここで見つからなければ詳細を表示して落とす）
-    need = ["市区町村コード", "市区町村名", "総数", "空き家"]
+    # 入力は「総数」または「住宅総数」のどちらかが存在すれば可とする
+    need = ["市区町村コード", "市区町村名", "空き家"]
     miss = [c for c in need if c not in df.columns]
     if miss:
         print("ファイル内の列名:", list(df.columns))
         raise ValueError(f"必要列が見つかりません: {miss} in {path.name}")
+    if ("総数" not in df.columns) and ("住宅総数" not in df.columns):
+        print("ファイル内の列名:", list(df.columns))
+        raise ValueError(f"必要列が見つかりません: 総数/住宅総数 in {path.name}")
 
     # 3) 数値整形
-    for c in ["総数", "空き家"]:
+    # 元データの「総数」または「住宅総数」を正規化しておく
+    if "住宅総数" in df.columns and "総数" not in df.columns:
+        base_total_col = "住宅総数"
+    else:
+        base_total_col = "総数"
+
+    for c in [base_total_col, "空き家"]:
         df[c] = (
             df[c]
             .astype(str)
@@ -143,8 +153,12 @@ def load_estat_table(path: Path, year: int, colmap: dict) -> pd.DataFrame:
     df = df[df["市区町村コード"].str.match(r"^\d{5}$")]
     df = df[df["市区町村コード"].str[-3:] != "000"]
 
+    # 統一出力のために「総数」を「住宅総数」にリネーム
+    if base_total_col != "住宅総数":
+        df = df.rename(columns={base_total_col: "住宅総数"})
+
     df["year"] = int(year)
-    return df[["市区町村コード", "市区町村名", "総数", "空き家", "year"]]
+    return df[["市区町村コード", "市区町村名", "住宅総数", "空き家", "year"]]
 
 
 def main():
@@ -178,14 +192,20 @@ def main():
     master["市区町村コード"] = master["市区町村コード"].astype(str).str.zfill(5)
     master["都道府県コード"] = master["都道府県コード"].astype(str).str.zfill(2)
 
-    tall = tall.merge(master, on=["市区町村コード", "市区町村名"], how="left")
+    # マスタ結合は『コードのみ』で行う（名称の微妙な揺れで落ちないように）
+    master_keep = master[["市区町村コード", "市区町村名", "都道府県コード", "都道府県名"]].copy()
+    tall = tall.merge(master_keep, on=["市区町村コード"], how="left", suffixes=("_src", ""))
+    # 市区町村名はマスタ優先（無ければソース名）
+    if "市区町村名_src" in tall.columns:
+        tall["市区町村名"] = tall["市区町村名"].fillna(tall["市区町村名_src"]) if "市区町村名" in tall.columns else tall["市区町村名_src"]
+        tall.drop(columns=["市区町村名_src"], inplace=True)
 
-    tall["空き家率"] = (tall["空き家"] / tall["総数"] * 100).round(4)
+    tall["空き家率"] = (tall["空き家"] / tall["住宅総数"] * 100).round(4)
 
     wide = tall.pivot_table(
         index=["市区町村コード", "市区町村名", "都道府県コード", "都道府県名"],
         columns="year",
-        values=["総数", "空き家", "空き家率"],
+        values=["住宅総数", "空き家", "空き家率"],
         aggfunc="sum",
     )
     wide.columns = [f"{a}_{b}" for a, b in wide.columns]

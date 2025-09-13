@@ -69,7 +69,7 @@ study_regions:
     prefecture_codes: []
 
 join:
-  city_master_path: data/master/city_master__all__v1__preview.csv
+  city_master_path: data/master/city_master__all__v1_preview.csv
 
 validation:
   housing_vacancy:

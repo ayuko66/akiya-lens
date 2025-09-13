@@ -16,6 +16,7 @@
 
 import argparse, sys, re, unicodedata
 from pathlib import Path
+import os
 import pandas as pd
 
 # Ensure project root on sys.path
@@ -126,6 +127,25 @@ def _read_excel_auto(path: Path) -> pd.DataFrame:
     return pd.read_excel(path, dtype=str)
 
 
+def _resolve_raw_path(raw_dir: Path, rel: str | None) -> Path | None:
+    """Resolve a raw input relative path against data/raw, with fallback to population/.
+
+    Examples:
+      rel='population/xxx.csv' -> data/raw/population/xxx.csv
+      rel='xxx.csv' -> try data/raw/xxx.csv, then data/raw/population/xxx.csv
+    """
+    if not rel:
+        return None
+    p = raw_dir / rel
+    if p.exists():
+        return p
+    if not rel.startswith("population/"):
+        p2 = raw_dir / "population" / rel
+        if p2.exists():
+            return p2
+    return p
+
+
 def _resolve_col(df: pd.DataFrame, candidates) -> str | None:
     cols = list(df.columns)
     norm_map = {_normalize_dash(c): c for c in cols}
@@ -214,13 +234,17 @@ def _load_moving_pair(
     frames = []
     out_col = list(col_cands.keys())[0] if col_cands else "値"
     if file_all:
-        df_all = _read_csv_auto(raw_dir / file_all, enc_in)
-        sel_all = _extract_moving_all_simple(df_all, out_col=out_col)
-        frames.append(sel_all)
+        p_all = raw_dir / file_all
+        if p_all.exists():
+            df_all = _read_csv_auto(p_all, enc_in)
+            sel_all = _extract_moving_all_simple(df_all, out_col=out_col)
+            frames.append(sel_all)
     if file_2018:
-        df18 = _read_csv_auto(raw_dir / file_2018, enc_in)
-        sel18 = _extract_moving_2018_simple(df18, out_col=out_col)
-        frames.append(sel18)
+        p_18 = raw_dir / file_2018
+        if p_18.exists():
+            df18 = _read_csv_auto(p_18, enc_in)
+            sel18 = _extract_moving_2018_simple(df18, out_col=out_col)
+            frames.append(sel18)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
@@ -302,9 +326,13 @@ def _aggregate_age_csv(path: Path, encodings, year_out: int) -> pd.DataFrame:
         "95-99",
     ]  # + 100以上
 
-    def _sum_bins(cols):
-        exist = [c for c in cols if c in dfn.columns]
-        return dfn[exist].sum(axis=1) if exist else pd.NA
+    def _strict_sum_bins(cols):
+        # すべての必要列が存在しない場合は全行NA
+        if not set(cols).issubset(dfn.columns):
+            return pd.Series([pd.NA] * len(dfn), index=dfn.index)
+        # どれか1つでもNAが含まれたらNA（部分和を許容しない）
+        # min_count=len(cols) により、非NAの数が列数に満たないと結果はNA
+        return dfn[cols].sum(axis=1, min_count=len(cols))
 
     hundred_col = (
         "100以上"
@@ -323,9 +351,10 @@ def _aggregate_age_csv(path: Path, encodings, year_out: int) -> pd.DataFrame:
             "市区町村名": df[name_col].astype(str),
             # 総数はカンマ付きなので数値化ヘルパを使用
             "総人口": _to_num(dfn[total_col]),
-            "15歳未満人口": _sum_bins(child_bins),
-            "15〜64歳人口": _sum_bins(work_bins),
-            "65歳以上人口": _sum_bins(elder_bins)
+            "15歳未満人口": _strict_sum_bins(child_bins),
+            "15〜64歳人口": _strict_sum_bins(work_bins),
+            # 65歳以上は『100以上』が無い場合もあるため、基本ビンは厳密合計、100以上は存在すれば加算
+            "65歳以上人口": _strict_sum_bins(elder_bins)
             + (hundred_series if isinstance(hundred_series, (pd.Series, int)) else 0),
         }
     )
@@ -451,22 +480,23 @@ def main():
     ap.add_argument("--region", default="all")  # study_regions のキー
 
     # raw_dir 直下のファイル名（実パスは cfg["io"]["raw_dir"] を前置）
-    ap.add_argument("--births_file", default="FEH_00450011_2509_births.csv")
-    ap.add_argument("--deaths_file", default="FEH_00450011_2509_deaths.csv")
+    # 生データは data/raw/population/ 配下を既定とする
+    ap.add_argument("--births_file", default="population/FEH_00450011_2509_births.csv")
+    ap.add_argument("--deaths_file", default="population/FEH_00450011_2509_deaths.csv")
 
     # 転入・転出（2020–2023と2018を分けて指定）
-    ap.add_argument("--moving_in_file", default="FEH_00200523_2509_moving_in.csv")
+    ap.add_argument("--moving_in_file", default="population/FEH_00200523_2509_moving_in.csv")
     ap.add_argument(
-        "--moving_in_2018_file", default="FEH_00200523_2509_2018_moving_in.csv"
+        "--moving_in_2018_file", default="population/FEH_00200523_2509_2018_moving_in.csv"
     )
-    ap.add_argument("--moving_out_file", default="FEH_00200523_2509_moving_out.csv")
+    ap.add_argument("--moving_out_file", default="population/FEH_00200523_2509_moving_out.csv")
     ap.add_argument(
-        "--moving_out_2018_file", default="FEH_00200523_2509_2018_moving_out.csv"
+        "--moving_out_2018_file", default="population/FEH_00200523_2509_2018_moving_out.csv"
     )
 
     # 年齢別（任意） 2018 / 2022(→2023扱い)
-    ap.add_argument("--age2018_file", default="")
-    ap.add_argument("--age2022_file", default="")
+    ap.add_argument("--age2018_file", default="population/1804ssnen.csv")
+    ap.add_argument("--age2022_file", default="population/2204ssnen.csv")
 
     # 出力テンプレ
     ap.add_argument(
@@ -487,22 +517,33 @@ def main():
     project = cfg.get("project") or {}
 
     # 1) 基本ソース読込（人口は年齢別CSVから算出）
-    births_df = _read_csv_auto(raw_dir / args.births_file, enc_in)
-    deaths_df = _read_csv_auto(raw_dir / args.deaths_file, enc_in)
+    births_sel = pd.DataFrame()
+    deaths_sel = pd.DataFrame()
+    # 出生
+    if args.births_file:
+        p_births = _resolve_raw_path(raw_dir, args.births_file)
+        if p_births and p_births.exists():
+            births_df = _read_csv_auto(p_births, enc_in)
+            births_sel = _extract_simple_total(births_df, out_col="出生数")
+            births_sel["市区町村コード"] = births_sel["市区町村コード"].astype(str).str.zfill(5)
+            births_sel["year"] = births_sel["year_raw"].apply(_to_year)
+            births_sel.drop(columns=["year_raw"], inplace=True)
+    # 死亡
+    if args.deaths_file:
+        p_deaths = _resolve_raw_path(raw_dir, args.deaths_file)
+        if p_deaths and p_deaths.exists():
+            deaths_df = _read_csv_auto(p_deaths, enc_in)
+            deaths_sel = _extract_simple_total(deaths_df, out_col="死亡数")
+            deaths_sel["市区町村コード"] = deaths_sel["市区町村コード"].astype(str).str.zfill(5)
+            deaths_sel["year"] = deaths_sel["year_raw"].apply(_to_year)
+            deaths_sel.drop(columns=["year_raw"], inplace=True)
 
     # 出生・死亡: 『表章項目』『性別』は参照せず、
     #  市区町村コード=『都道府県・市部－郡部－市区町村別 コード』/候補、
     #  年次=『時間軸(年次) コード』/候補、
     #  値=『総数』を数値化して集約
-    births_sel = _extract_simple_total(births_df, out_col="出生数")
-    deaths_sel = _extract_simple_total(deaths_df, out_col="死亡数")
-
-    for d in (births_sel, deaths_sel):
-        d["市区町村コード"] = d["市区町村コード"].astype(str).str.zfill(5)
-        d["year"] = d["year_raw"].apply(_to_year)
-        d.drop(columns=["year_raw"], inplace=True)
-
     # 2) 転入・転出（分割ファイルの結合）
+
     move_in = _load_moving_pair(
         raw_dir, enc_in, args.moving_in_file, args.moving_in_2018_file, CANDS_MOVE_IN
     )
@@ -511,6 +552,15 @@ def main():
     )
 
     # 3) 年齢別人口（総人口もここから採用）
+    #    引数が未指定なら、プロジェクト標準の生データパスを自動採用
+    if not args.age2018_file:
+        auto18 = (raw_dir / "population/1804ssnen.csv")
+        if auto18.exists():
+            args.age2018_file = str(auto18.relative_to(raw_dir))
+    if not args.age2022_file:
+        auto22 = (raw_dir / "population/2204ssnen.csv")
+        if auto22.exists():
+            args.age2022_file = str(auto22.relative_to(raw_dir))
     age18 = pd.DataFrame()
     age22 = pd.DataFrame()
     if args.age2018_file:
@@ -558,16 +608,18 @@ def main():
         raise RuntimeError(
             "年齢別人口CSVが見つかりません。--age2018_file および/または --age2022_file を指定してください。"
         )
-    base = base.merge(
-        births_sel[["市区町村コード", "year", "出生数"]],
-        on=["市区町村コード", "year"],
-        how="left",
-    )
-    base = base.merge(
-        deaths_sel[["市区町村コード", "year", "死亡数"]],
-        on=["市区町村コード", "year"],
-        how="left",
-    )
+    if not births_sel.empty:
+        base = base.merge(
+            births_sel[["市区町村コード", "year", "出生数"]],
+            on=["市区町村コード", "year"],
+            how="left",
+        )
+    if not deaths_sel.empty:
+        base = base.merge(
+            deaths_sel[["市区町村コード", "year", "死亡数"]],
+            on=["市区町村コード", "year"],
+            how="left",
+        )
     if not move_in.empty:
         base = base.merge(
             move_in[["市区町村コード", "year", "転入者数"]],
@@ -580,34 +632,8 @@ def main():
             on=["市区町村コード", "year"],
             how="left",
         )
-    if not age18.empty:
-        base = base.merge(
-            age18[
-                [
-                    "市区町村コード",
-                    "year",
-                    "15歳未満人口",
-                    "15〜64歳人口",
-                    "65歳以上人口",
-                ]
-            ],
-            on=["市区町村コード", "year"],
-            how="left",
-        )
-    if not age22.empty:
-        base = base.merge(
-            age22[
-                [
-                    "市区町村コード",
-                    "year",
-                    "15歳未満人口",
-                    "15〜64歳人口",
-                    "65歳以上人口",
-                ]
-            ],
-            on=["市区町村コード", "year"],
-            how="left",
-        )
+    # 3.5) 年齢3区分は base に既に含まれているため、重複マージはしない
+    #      ただし、過去の実行で重複列（*_x, *_y）が混入したケースに備え、後で合成する
 
     # 5) 数値化・派生（★ 世帯数・転入超過率・1世帯当たり人員は廃止）
     for c in [
@@ -623,6 +649,23 @@ def main():
         if c in base.columns:
             base[c] = _to_num(base[c])
 
+    # 5.5) 年齢3区分の重複列がある場合は統合（*_x を優先、無い場合 *_y）
+    def _coalesce(dst: str):
+        x, y = f"{dst}_x", f"{dst}_y"
+        if x in base.columns or y in base.columns:
+            base[dst] = (
+                base[x] if x in base.columns else pd.NA
+            )
+            if y in base.columns:
+                base[dst] = base[dst].fillna(base[y])
+    for col in ["15歳未満人口", "15〜64歳人口", "65歳以上人口"]:
+        _coalesce(col)
+
+    # 存在しない列は空列を用意（派生率計算を素直にNaNで通すため）
+    for cc in ["出生数", "死亡数", "転入者数", "転出者数"]:
+        if cc not in base.columns:
+            base[cc] = pd.NA
+
     pop = base.get("総人口")
     if pop is not None:
         if "65歳以上人口" in base.columns:
@@ -631,10 +674,14 @@ def main():
             base["年少人口率[%]"] = base["15歳未満人口"] / pop * 100
         if "15〜64歳人口" in base.columns:
             base["生産年齢人口率[%]"] = base["15〜64歳人口"] / pop * 100
-        base["出生率[‰]"] = base["出生数"] / pop * 1000
-        base["死亡率[‰]"] = base["死亡数"] / pop * 1000
-        base["転入率[‰]"] = base["転入者数"] / pop * 1000
-        base["転出率[‰]"] = base["転出者数"] / pop * 1000
+        if "出生数" in base.columns:
+            base["出生率[‰]"] = base["出生数"] / pop * 1000
+        if "死亡数" in base.columns:
+            base["死亡率[‰]"] = base["死亡数"] / pop * 1000
+        if "転入者数" in base.columns:
+            base["転入率[‰]"] = base["転入者数"] / pop * 1000
+        if "転出者数" in base.columns:
+            base["転出率[‰]"] = base["転出者数"] / pop * 1000
         # ★ 転入超過率[‰] は削除
 
     # 6) 地域フィルタ
