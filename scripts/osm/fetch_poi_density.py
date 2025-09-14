@@ -223,7 +223,7 @@ def count_pois_batched(
     categories: Dict[str, Iterable[str]],
     sleep_sec: float = 0.8,
     retries: int = 3,
-) -> Dict[str, int]:
+) -> Dict[str, Optional[int]]:
     """
     複数カテゴリ（キー: カテゴリ名 → 値: タグ式の配列）をまとめて1回のOverpassで件数取得。
 
@@ -265,7 +265,7 @@ def count_pois_batched(
         raise RuntimeError(f"Overpass失敗(バッチ): qid={qid}, err={last_err}")
 
     # レスポンスから count を順に取り出し、カテゴリ順に対応付け
-    counts: List[int] = []
+    counts: List[Optional[int]] = []
     for el in data.get("elements", []):
         if el.get("type") != "count":
             continue
@@ -297,9 +297,9 @@ def count_pois_batched(
                         pass
             counts.append(s)
 
-    # カテゴリ数に満たない場合は0で埋める
+    # カテゴリ数に満たない場合は欠損(None)で埋める（0と区別するため）
     if len(counts) < len(categories):
-        counts.extend([0] * (len(categories) - len(counts)))
+        counts.extend([None] * (len(categories) - len(counts)))
 
     return {name: counts[i] for i, name in enumerate(categories.keys())}
 
@@ -533,22 +533,22 @@ def main() -> None:
             sleep_sec=args.sleep_sec,
             retries=args.retries,
         )
-        stations = cat_counts.get("stations", 0)
-        supermarkets = cat_counts.get("supermarkets", 0)
-        schools = cat_counts.get("schools", 0)
-        hospitals = cat_counts.get("hospitals", 0)
+        stations = cat_counts.get("stations")
+        supermarkets = cat_counts.get("supermarkets")
+        schools = cat_counts.get("schools")
+        hospitals = cat_counts.get("hospitals")
 
         print(
             f"stations: {stations}, supermarkets: {supermarkets}, schools: {schools}, hospitals: {hospitals}"
         )
 
-        # 4) 密度計算
-        dens = {
-            "stations_density_per_km2": stations / area_km2,
-            "supermarkets_density_per_km2": supermarkets / area_km2,
-            "schools_density_per_km2": schools / area_km2,
-            "hospitals_density_per_km2": hospitals / area_km2,
-        }
+        # 4) 密度計算（欠損は None のままにして空欄出力）
+        stations_density = (stations / area_km2) if stations is not None else None
+        supermarkets_density = (
+            supermarkets / area_km2 if supermarkets is not None else None
+        )
+        schools_density = (schools / area_km2) if schools is not None else None
+        hospitals_density = (hospitals / area_km2) if hospitals is not None else None
 
         out = {
             "code": code,
@@ -557,15 +557,23 @@ def main() -> None:
             "wikidata": qid,
             "area_km2": round(area_km2, 6),
             "stations": stations,
-            "stations_density_per_km2": round(dens["stations_density_per_km2"], 6),
+            "stations_density_per_km2": (
+                round(stations_density, 6) if stations_density is not None else None
+            ),
             "supermarkets": supermarkets,
-            "supermarkets_density_per_km2": round(
-                dens["supermarkets_density_per_km2"], 6
+            "supermarkets_density_per_km2": (
+                round(supermarkets_density, 6)
+                if supermarkets_density is not None
+                else None
             ),
             "schools": schools,
-            "schools_density_per_km2": round(dens["schools_density_per_km2"], 6),
+            "schools_density_per_km2": (
+                round(schools_density, 6) if schools_density is not None else None
+            ),
             "hospitals": hospitals,
-            "hospitals_density_per_km2": round(dens["hospitals_density_per_km2"], 6),
+            "hospitals_density_per_km2": (
+                round(hospitals_density, 6) if hospitals_density is not None else None
+            ),
         }
         out_rows.append(out)
 
@@ -620,8 +628,11 @@ def main() -> None:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in out_rows:
-            # 内部キー → 日本語キーへ変換
-            out_ja = {header_map[k]: r.get(k) for k in ordered_internal_keys}
+            # 内部キー → 日本語キーへ変換（None は空欄にする）
+            out_ja = {}
+            for k in ordered_internal_keys:
+                v = r.get(k)
+                out_ja[header_map[k]] = "" if v is None else v
             w.writerow(out_ja)
 
     print(f"\n✅ Done: {args.out_csv}  ({len(out_rows)} rows)")
