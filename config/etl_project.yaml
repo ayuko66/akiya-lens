@@ -62,7 +62,7 @@ datasets:
 # 学習対象エリア(都道府県コード)
 study_regions:
   yatsugatake_alps:
-    prefecture_codes: ["19","20","21","22"]
+    prefecture_codes: ["15","16","19","20","21","22"]
   yatsugatake_core:
     prefecture_codes: ["19","20"]
   all:

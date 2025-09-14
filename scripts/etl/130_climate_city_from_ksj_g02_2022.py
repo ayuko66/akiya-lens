@@ -285,13 +285,40 @@ def main():
         default=None,
         help="Optional list of prefecture codes to filter municipalities (e.g., 19 20 21 22)",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("config/etl_project.yaml"),
+        help="Config YAML to read default region filter",
+    )
+    parser.add_argument(
+        "--region",
+        type=str,
+        default="yatsugatake_alps",
+        help="study_regions key to use when --pref-codes is not provided",
+    )
     args = parser.parse_args()
+    pref_codes = args.pref_codes
+    # If pref codes not explicitly provided, load from config/region (study_regions)
+    if not pref_codes:
+        try:
+            import yaml
+            with open(args.config, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            pref_codes = (
+                cfg.get("study_regions", {})
+                .get(args.region, {})
+                .get("prefecture_codes", [])
+            )
+        except Exception as e:
+            logging.warning(f"Failed to load region defaults from {args.config}: {e}")
+            pref_codes = None
 
     run(
         muni_geojson=args.muni_geo,
         climate_glob=args.climate_glob,
         output_csv=args.output,
-        prefecture_codes=args.pref_codes,
+        prefecture_codes=pref_codes,
     )
 
 

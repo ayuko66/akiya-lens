@@ -1,5 +1,14 @@
+import argparse
+import sys
 import pandas as pd
 from pathlib import Path
+
+# Ensure project root on sys.path for local imports
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.utils.config_loader import load_yaml
 
 
 def load_csv(path: Path, dtype_code="Int64") -> pd.DataFrame:
@@ -63,6 +72,12 @@ def pivot_population_wide(pop_long: pd.DataFrame) -> pd.DataFrame:
 def main():
     repo_root = Path(__file__).resolve().parents[2]
 
+    # Args: read region filter from config to unify behavior
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default=str(repo_root / "config/etl_project.yaml"))
+    ap.add_argument("--region", default="yatsugatake_alps")
+    args = ap.parse_args()
+
     # Paths
     p_feh2023_raw = repo_root / "data/raw/FEH_00200522_2023_2508.csv"
     p_pop_long = repo_root / "data/processed/population_stats__v1__20250913__yatsugatake_alps.csv"
@@ -80,6 +95,11 @@ def main():
     housing = load_csv(p_housing)
     citym = load_csv(p_citym)
 
+    # Load target prefecture codes from config (yatsugatake_alps by default)
+    cfg = load_yaml(args.config)
+    pref_codes = cfg.get("study_regions", {}).get(args.region, {}).get("prefecture_codes", [])
+    pref_codes = [str(c).zfill(2) for c in pref_codes]
+
     # Build base municipalities from FEH 2023 raw (exclude national/pref summaries)
     feh = pd.read_csv(p_feh2023_raw)
     code_col = "全国、都道府県、市区町村 コード"
@@ -91,8 +111,9 @@ def main():
         .drop_duplicates()
         .rename(columns={code_col: "市区町村コード", name_col: "市区町村名"})
     )
-    # Restrict to study region (19,20,21,22)
-    base_codes = base_codes[base_codes["市区町村コード"].str[:2].isin(["19", "20", "21", "22"])].copy()
+    # Restrict to study region (config-driven). If empty, keep all.
+    if pref_codes:
+        base_codes = base_codes[base_codes["市区町村コード"].str[:2].isin(pref_codes)].copy()
     base_codes["市区町村コード"] = base_codes["市区町村コード"].astype("Int64")
 
     # Population wide
@@ -290,7 +311,9 @@ def main():
     out_path = repo_root / "data/processed/features_master__wide__v1.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_path, index=False)
-    print(f"Wrote {out_path.relative_to(repo_root)} with {len(df)} rows and {len(df.columns)} columns.")
+    print(
+        f"Wrote {out_path.relative_to(repo_root)} with {len(df)} rows, cols={len(df.columns)} region={args.region}"
+    )
 
 
 if __name__ == "__main__":

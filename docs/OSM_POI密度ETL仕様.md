@@ -35,7 +35,7 @@
 - 駅の `public_transport=station` と クリニックを合算
   ```bash
   python scripts/osm/fetch_poi_density.py \
-    --in data/master/city_master__all__v1__preview.csv \
+    --in data/master/city_master__all__v1_preview.csv \
     --out data/processed/osm_density_with_pt_clinic.csv \
     --config config/etl_project.yaml \
     --include-public-transport-stations \

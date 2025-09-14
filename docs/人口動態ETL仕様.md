@@ -63,6 +63,11 @@
 
 ---
 
+## 実行例
+```bash
+python3 scripts/etl/121_estat_population_stats_from_split_sources.py --config config/etl_project.yaml --region yatsugatake_alps --age2018_file population/1804ssnen.csv --age2022_file population/2204ssnen.csv
+```
+
 ## 補足
 - 年齢区分列は「50～54」「50-54」「50～54歳」など揺れがあるため、正規表現で吸収。
 - 「100歳以上」は専用列が存在するため65歳以上人口に必ず加算。
