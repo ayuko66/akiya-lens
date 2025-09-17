@@ -23,6 +23,11 @@ dependencies = [
     "pyyaml>=6.0.2",
     "geopandas>=1.1.1",
     "shapely>=2.1.1",
+    "catboost>=1.2.8",
+    "xgboost>=3.0.5",
+    "matplotlib>=3.10.6",
+    "plotly>=6.3.0",
+    "graphviz>=0.21",
 ]
 
 [tool.uv]  # uv専用設定（任意）
