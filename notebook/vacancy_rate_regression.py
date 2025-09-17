@@ -1,24 +1,24 @@
-"""Vacancy rate regression modelling script.
+"""空き家率回帰モデリングスクリプト。
 
-The script trains CatBoost and XGBoost models to predict the change in
-vacancy rate between 2018 and 2023 using the engineered features from
-``data/processed/features_master__wide__v1.csv``.  The workflow is built for
-interpretability: we remove highly collinear features, use tree-based models
-that can natively handle missing values, and aggregate SHAP values coming from
-CatBoost across cross-validation folds.
+このスクリプトは、``data/processed/features_master__wide__v1.csv`` から生成された
+特徴量を使用して、2018年から2023年の空き家率の変化を予測するためにCatBoostと
+XGBoostモデルを訓練します。このワークフローは解釈可能性を重視して構築されています。
+具体的には、多重共線性の高い特徴量を削除し、欠損値をネイティブに扱えるツリーベースの
+モデルを使用し、クロスバリデーションの各フォールドでCatBoostから得られるSHAP値を
+集計します。
 
-Typical usage
+典型的な使用法
 -------------
 .. code-block:: bash
 
-    python notebook/vacancy_rate_regression.py \
-        --data-path data/processed/features_master__wide__v1.csv \
+    python notebook/vacancy_rate_regression.py \\
+        --data-path data/processed/features_master__wide__v1.csv \\
         --shap-output data/processed/catboost_mean_abs_shap.csv
 
-This prints per-fold metrics, the average cross-validation metrics, and the top
-global SHAP importances.  SHAP importances for all features are additionally
-saved for downstream analysis, and the average metrics are written to a JSON
-file so they can be tracked in notebooks or dashboards.
+これにより、フォールドごとのメトリクス、クロスバリデーションの平均メトリクス、および
+グローバルなSHAP重要度の上位が表示されます。すべての特徴量のSHAP重要度は、下流の分析の
+ために追加で保存され、平均メトリクスはJSONファイルに書き込まれるため、ノートブックや
+ダッシュボードで追跡できます。
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ DEFAULT_VIF_THRESHOLD = 8.0
 def load_data(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(
-            f"Feature file not found at {path}. Please generate it before running."
+            f"特徴量ファイルが {path} に見つかりません。実行前に生成してください。"
         )
 
     return pd.read_csv(path)
@@ -103,7 +103,9 @@ def prepare_features(
     feat_df = remove_high_vif_features(feat_df, threshold=vif_threshold)
 
     if feat_df.empty:
-        raise ValueError("No usable features remain after preprocessing. Adjust the thresholds.")
+        raise ValueError(
+            "No usable features remain after preprocessing. Adjust the thresholds."
+        )
 
     return feat_df, target
 
@@ -111,20 +113,19 @@ def prepare_features(
 def remove_high_correlation_features(
     feat_df: pd.DataFrame, threshold: float = 0.9
 ) -> pd.DataFrame:
-    """Drop columns whose absolute pairwise correlation exceeds ``threshold``.
+    """絶対ペアワイズ相関が ``threshold`` を超える列を削除します。
 
-    Parameters
+    引数
     ----------
-    feat_df:
-        Input feature matrix. It is *not* modified in place.
-    threshold:
-        Maximum allowed absolute correlation between any pair of features.
+    feat_df : pd.DataFrame
+        入力特徴量行列。この関数はインプレースで変更しません。
+    threshold : float
+        特徴量のペア間で許容される最大の絶対相関。
 
-    Returns
+    戻り値
     -------
     pd.DataFrame
-        Data frame containing the subset of features that pass the correlation
-        filter.
+        相関フィルターを通過した特徴量のサブセットを含むデータフレーム。
     """
 
     if feat_df.empty:
@@ -137,12 +138,10 @@ def remove_high_correlation_features(
 
 
 def _variance_inflation_factor(feat_df: pd.DataFrame) -> pd.Series:
-    """Compute variance inflation factor for each column.
+    """各列の分散拡大係数（VIF）を計算します。
 
-    Missing values are mean-imputed only for the purpose of the VIF computation,
-    leaving the original ``feat_df`` untouched.
+    欠損値はVIF計算の目的でのみ平均値で補完され、元の ``feat_df`` は変更されません。
     """
-
     if feat_df.empty:
         return pd.Series(dtype=float)
 
@@ -150,7 +149,7 @@ def _variance_inflation_factor(feat_df: pd.DataFrame) -> pd.Series:
     corr = filled.corr().to_numpy()
 
     # ``corr`` can be singular, therefore we use the pseudo inverse.
-    try:
+    try:  # `corr` は特異行列になる可能性があるため、疑似逆行列を使用します。
         inv_corr = np.linalg.pinv(corr)
     except np.linalg.LinAlgError:
         inv_corr = np.linalg.pinv(corr + np.eye(corr.shape[0]) * 1e-8)
@@ -162,21 +161,20 @@ def _variance_inflation_factor(feat_df: pd.DataFrame) -> pd.Series:
 def remove_high_vif_features(
     feat_df: pd.DataFrame, threshold: float = 8.0
 ) -> pd.DataFrame:
-    """Iteratively drop columns with a variance inflation factor above ``threshold``.
+    """分散拡大係数（VIF）が ``threshold`` を超える列を繰り返し削除します。
 
-    Parameters
+    引数
     ----------
-    feat_df:
-        Input feature matrix. It is *not* modified in place.
-    threshold:
-        The VIF threshold; higher values indicate stronger multicollinearity.
+    feat_df : pd.DataFrame
+        入力特徴量行列。この関数はインプレースで変更しません。
+    threshold : float
+        VIFのしきい値。値が高いほど、より強い多重共線性を示します。
 
-    Returns
+    戻り値
     -------
     pd.DataFrame
-        Data frame containing the subset of features that pass the VIF filter.
+        VIFフィルターを通過した特徴量のサブセットを含むデータフレーム。
     """
-
     columns = list(feat_df.columns)
     reduced = feat_df.copy()
 
@@ -278,7 +276,9 @@ def train_xgboost(
     return xgb_model, imputer, {"mse": mse, "r2": r2}
 
 
-def compute_catboost_shap(model, X_valid: pd.DataFrame, y_valid: pd.Series) -> pd.Series:
+def compute_catboost_shap(
+    model, X_valid: pd.DataFrame, y_valid: pd.Series
+) -> pd.Series:
     from catboost import Pool
 
     pool = Pool(X_valid, y_valid)
@@ -320,150 +320,152 @@ def _report_goal_attainment(
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train interpretable vacancy rate regressors.")
+    parser = argparse.ArgumentParser(
+        description="解釈可能な空き家率回帰モデルを訓練します。"
+    )
     parser.add_argument(
         "--data-path",
         type=Path,
         default=DATA_PATH,
-        help="Path to the wide feature CSV.",
+        help="ワイド形式の特徴量CSVへのパス。",
     )
     parser.add_argument(
         "--shap-output",
         type=Path,
         default=SHAP_OUTPUT_PATH,
-        help="Where to store the averaged CatBoost SHAP importances.",
+        help="平均化されたCatBoostのSHAP重要度を保存する場所。",
     )
     parser.add_argument(
         "--metrics-output",
         type=Path,
         default=METRICS_OUTPUT_PATH,
-        help="Where to store the averaged cross-validation metrics as JSON.",
+        help="平均化されたクロスバリデーションのメトリクスをJSONとして保存する場所。",
     )
     parser.add_argument(
         "--folds",
         type=int,
         default=5,
-        help="Number of cross-validation folds.",
+        help="クロスバリデーションのフォールド数。",
     )
     parser.add_argument(
         "--max-missing-ratio",
         type=float,
         default=DEFAULT_MAX_MISSING_RATIO,
-        help="Maximum allowed missing-value ratio per feature.",
+        help="特徴量ごとに許容される欠損値の最大比率。",
     )
     parser.add_argument(
         "--min-unique-values",
         type=int,
         default=DEFAULT_MIN_UNIQUE_VALUES,
-        help="Minimum number of unique values required per feature.",
+        help="特徴量ごとに必要なユニーク値の最小数。",
     )
     parser.add_argument(
         "--corr-threshold",
         type=float,
         default=DEFAULT_CORR_THRESHOLD,
-        help="Maximum allowed absolute pairwise correlation before dropping features.",
+        help="特徴量を削除する前の、許容される最大絶対ペアワイズ相関。",
     )
     parser.add_argument(
         "--vif-threshold",
         type=float,
         default=DEFAULT_VIF_THRESHOLD,
-        help="Maximum allowed variance inflation factor before dropping features.",
+        help="特徴量を削除する前の、許容される最大分散拡大係数（VIF）。",
     )
     parser.add_argument(
         "--mse-threshold",
         type=float,
         default=0.5,
-        help="Target threshold for the mean squared error metric.",
+        help="平均二乗誤差（MSE）メトリクスの目標しきい値。",
     )
     parser.add_argument(
         "--mse-direction",
         choices=["<=", ">="],
         default="<=",
-        help="Whether the MSE goal is satisfied when the metric is <= or >= the threshold.",
+        help="メトリクスがしきい値以下（<=）または以上（>=）の場合にMSEの目標が達成されるかどうか。",
     )
     parser.add_argument(
         "--r2-threshold",
         type=float,
         default=0.5,
-        help="Target threshold for the R^2 metric.",
+        help="R^2メトリクスの目標しきい値。",
     )
     parser.add_argument(
         "--r2-direction",
         choices=[">=", "<="],
         default=">=",
-        help="Whether the R^2 goal is satisfied when the metric is >= or <= the threshold.",
+        help="メトリクスがしきい値以上（>=）または以下（<=）の場合にR^2の目標が達成されるかどうか。",
     )
     parser.add_argument(
         "--catboost-iterations",
         type=int,
         default=2000,
-        help="Number of boosting iterations for CatBoost.",
+        help="CatBoostのブースティングイテレーション数。",
     )
     parser.add_argument(
         "--catboost-depth",
         type=int,
         default=6,
-        help="Tree depth for CatBoost.",
+        help="CatBoostの木の深さ。",
     )
     parser.add_argument(
         "--catboost-learning-rate",
         type=float,
         default=0.05,
-        help="Learning rate for CatBoost.",
+        help="CatBoostの学習率。",
     )
     parser.add_argument(
         "--catboost-od-wait",
         type=int,
         default=50,
-        help="Number of iterations with no improvement before CatBoost early stopping.",
+        help="CatBoostの早期停止前に改善が見られないイテレーション数。",
     )
     parser.add_argument(
         "--xgb-n-estimators",
         type=int,
         default=2000,
-        help="Number of boosting rounds for XGBoost.",
+        help="XGBoostのブースティングラウンド数。",
     )
     parser.add_argument(
         "--xgb-learning-rate",
         type=float,
         default=0.03,
-        help="Learning rate for XGBoost.",
+        help="XGBoostの学習率。",
     )
     parser.add_argument(
         "--xgb-max-depth",
         type=int,
         default=4,
-        help="Maximum tree depth for XGBoost.",
+        help="XGBoostの木の最大深度。",
     )
     parser.add_argument(
         "--xgb-subsample",
         type=float,
         default=0.8,
-        help="Subsample ratio of the training instances for XGBoost.",
+        help="XGBoostの訓練インスタンスのサブサンプル比率。",
     )
     parser.add_argument(
         "--xgb-colsample-bytree",
         type=float,
         default=0.8,
-        help="Subsample ratio of columns when constructing each tree for XGBoost.",
+        help="XGBoostで各木を構築する際の列のサブサンプル比率。",
     )
     parser.add_argument(
         "--xgb-reg-lambda",
         type=float,
         default=1.0,
-        help="L2 regularisation term for XGBoost.",
+        help="XGBoostのL2正則化項。",
     )
     parser.add_argument(
         "--xgb-min-child-weight",
         type=float,
         default=1.0,
-        help="Minimum sum of instance weight needed in a child for XGBoost.",
+        help="XGBoostの子ノードに必要なインスタンスの重みの最小合計。",
     )
     parser.add_argument(
         "--xgb-early-stopping",
         type=int,
         default=50,
-        help="Rounds of no improvement before XGBoost early stopping.",
+        help="XGBoostの早期停止前に改善が見られないラウンド数。",
     )
     return parser.parse_args(args=args)
 
@@ -480,10 +482,10 @@ def main(cli_args: list[str] | None = None):
         vif_threshold=args.vif_threshold,
     )
 
-    print("--- Dataset Overview ---")
-    print(f"Total records: {len(df)}")
-    print(f"Target mean: {y.mean():.3f} | Target std: {y.std():.3f}")
-    print(f"Selected features: {X.shape[1]} out of {df.shape[1]}")
+    print("--- データセット概要 ---")
+    print(f"総レコード数: {len(df)}")
+    print(f"目的変数の平均: {y.mean():.3f} | 目的変数の標準偏差: {y.std():.3f}")
+    print(f"選択された特徴量数: {X.shape[1]} / {df.shape[1]}")
 
     kf = KFold(n_splits=args.folds, shuffle=True, random_state=RANDOM_STATE)
 
@@ -491,7 +493,7 @@ def main(cli_args: list[str] | None = None):
     xgb_metrics_list: list[dict[str, float]] = []
     shap_importances: list[pd.Series] = []
 
-    print(f"\n--- Running {args.folds}-fold Cross-Validation ---")
+    print(f"\n--- {args.folds}分割交差検証を実行 ---")
 
     for fold, (train_index, valid_index) in enumerate(kf.split(X, y), start=1):
         print(f"\n--- Fold {fold}/{args.folds} ---")
@@ -548,7 +550,7 @@ def main(cli_args: list[str] | None = None):
         args.shap_output, encoding="utf-8-sig", header=["mean_abs_shap"]
     )
 
-    print("\n--- Average Cross-Validation Results ---")
+    print("\n--- 交差検証の平均結果 ---")
     print("--- CatBoost ---")
     print(f"Average MSE: {cat_mse:.3f} | Average R^2: {cat_r2:.3f}")
     goal_kwargs = {
@@ -561,7 +563,7 @@ def main(cli_args: list[str] | None = None):
     print("--- XGBoost ---")
     print(f"Average MSE: {xgb_mse:.3f} | Average R^2: {xgb_r2:.3f}")
     print(_report_goal_attainment(xgb_mse, xgb_r2, **goal_kwargs))
-    print("\n--- Average Top SHAP (CatBoost) ---")
+    print("\n--- SHAP重要度の平均 (上位, CatBoost) ---")
     print(avg_shap_importance.head(10))
 
     metrics_payload = {
