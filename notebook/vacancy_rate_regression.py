@@ -1,42 +1,87 @@
-import pandas as pd
-import numpy as np
+"""Vacancy rate regression modelling script.
+
+The script trains CatBoost and XGBoost models to predict the change in
+vacancy rate between 2018 and 2023 using the engineered features from
+``data/processed/features_master__wide__v1.csv``.  The workflow is built for
+interpretability: we remove highly collinear features, use tree-based models
+that can natively handle missing values, and aggregate SHAP values coming from
+CatBoost across cross-validation folds.
+
+Typical usage
+-------------
+.. code-block:: bash
+
+    python notebook/vacancy_rate_regression.py \
+        --data-path data/processed/features_master__wide__v1.csv \
+        --shap-output data/processed/catboost_mean_abs_shap.csv
+
+This prints per-fold metrics, the average cross-validation metrics, and the top
+global SHAP importances.  SHAP importances for all features are additionally
+saved for downstream analysis, and the average metrics are written to a JSON
+file so they can be tracked in notebooks or dashboards.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
 from pathlib import Path
-from sklearn.model_selection import KFold
-from sklearn.metrics import mean_squared_error, r2_score
+
+import numpy as np
+import pandas as pd
 from sklearn.impute import SimpleImputer
-from xgboost import XGBRegressor
-from catboost import CatBoostRegressor, Pool
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import KFold
 
 DATA_PATH = Path("data/processed/features_master__wide__v1.csv")
+SHAP_OUTPUT_PATH = Path("data/processed/catboost_mean_abs_shap.csv")
+METRICS_OUTPUT_PATH = Path("data/processed/model_metrics.json")
 RANDOM_STATE = 42
+
+DEFAULT_DROP_COLS = {
+    "市区町村コード",
+    "市区町村名",
+    "都道府県名",
+    "空き家率_差分_5年_pt",
+    "空き家率_2023",
+    "空き家率_2018",
+    "空き家_増加率_5年_%",
+    "空き家率_2023_raw",
+}
+
+DEFAULT_MAX_MISSING_RATIO = 0.4
+DEFAULT_MIN_UNIQUE_VALUES = 5
+DEFAULT_CORR_THRESHOLD = 0.9
+DEFAULT_VIF_THRESHOLD = 8.0
 
 
 def load_data(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Feature file not found at {path}. Please generate it before running."
+        )
+
     return pd.read_csv(path)
 
 
-def prepare_features(df: pd.DataFrame):
+def prepare_features(
+    df: pd.DataFrame,
+    *,
+    drop_cols: set[str] | None = None,
+    max_missing_ratio: float = DEFAULT_MAX_MISSING_RATIO,
+    min_unique_values: int = DEFAULT_MIN_UNIQUE_VALUES,
+    corr_threshold: float = DEFAULT_CORR_THRESHOLD,
+    vif_threshold: float = DEFAULT_VIF_THRESHOLD,
+):
     df = df.copy()
 
-    if "空き家率_差分_5年_pt" in df.columns:
-        target = df["空き家率_差分_5年_pt"]
-    else:
-        target = df["空き家率_2023"] - df["空き家率_2018"]
+    target = df["空き家率_2023"] - df["空き家率_2018"]
 
     mask = target.notna()
     df = df.loc[mask]
     target = target.loc[mask]
 
-    drop_cols = {
-        "市区町村コード",
-        "市区町村名",
-        "都道府県名",
-        "空き家率_差分_5年_pt",
-        "空き家率_2023",
-        "空き家率_2018",
-        "空き家_増加率_5年_%",
-        "空き家率_2023_raw",
-    }
+    drop_cols = drop_cols or DEFAULT_DROP_COLS
 
     numeric_cols = [
         col
@@ -49,28 +94,126 @@ def prepare_features(df: pd.DataFrame):
     valid_cols = [
         col
         for col in feat_df.columns
-        if feat_df[col].isna().mean() <= 0.4 and feat_df[col].nunique(dropna=True) > 5
+        if feat_df[col].isna().mean() <= max_missing_ratio
+        and feat_df[col].nunique(dropna=True) > min_unique_values
     ]
     feat_df = feat_df[valid_cols]
 
-    corr_matrix = feat_df.corr().abs()
-    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-    to_drop = [col for col in upper.columns if any(upper[col] > 0.9)]
-    feat_df = feat_df.drop(columns=to_drop)
+    feat_df = remove_high_correlation_features(feat_df, threshold=corr_threshold)
+    feat_df = remove_high_vif_features(feat_df, threshold=vif_threshold)
+
+    if feat_df.empty:
+        raise ValueError("No usable features remain after preprocessing. Adjust the thresholds.")
 
     return feat_df, target
 
 
-def train_catboost(X_train, X_valid, y_train, y_valid):
+def remove_high_correlation_features(
+    feat_df: pd.DataFrame, threshold: float = 0.9
+) -> pd.DataFrame:
+    """Drop columns whose absolute pairwise correlation exceeds ``threshold``.
+
+    Parameters
+    ----------
+    feat_df:
+        Input feature matrix. It is *not* modified in place.
+    threshold:
+        Maximum allowed absolute correlation between any pair of features.
+
+    Returns
+    -------
+    pd.DataFrame
+        Data frame containing the subset of features that pass the correlation
+        filter.
+    """
+
+    if feat_df.empty:
+        return feat_df
+
+    corr_matrix = feat_df.corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+    to_drop = [col for col in upper.columns if any(upper[col] > threshold)]
+    return feat_df.drop(columns=to_drop)
+
+
+def _variance_inflation_factor(feat_df: pd.DataFrame) -> pd.Series:
+    """Compute variance inflation factor for each column.
+
+    Missing values are mean-imputed only for the purpose of the VIF computation,
+    leaving the original ``feat_df`` untouched.
+    """
+
+    if feat_df.empty:
+        return pd.Series(dtype=float)
+
+    filled = feat_df.fillna(feat_df.mean(numeric_only=True))
+    corr = filled.corr().to_numpy()
+
+    # ``corr`` can be singular, therefore we use the pseudo inverse.
+    try:
+        inv_corr = np.linalg.pinv(corr)
+    except np.linalg.LinAlgError:
+        inv_corr = np.linalg.pinv(corr + np.eye(corr.shape[0]) * 1e-8)
+
+    vif = pd.Series(np.diag(inv_corr), index=feat_df.columns)
+    return vif
+
+
+def remove_high_vif_features(
+    feat_df: pd.DataFrame, threshold: float = 8.0
+) -> pd.DataFrame:
+    """Iteratively drop columns with a variance inflation factor above ``threshold``.
+
+    Parameters
+    ----------
+    feat_df:
+        Input feature matrix. It is *not* modified in place.
+    threshold:
+        The VIF threshold; higher values indicate stronger multicollinearity.
+
+    Returns
+    -------
+    pd.DataFrame
+        Data frame containing the subset of features that pass the VIF filter.
+    """
+
+    columns = list(feat_df.columns)
+    reduced = feat_df.copy()
+
+    while len(columns) > 1:
+        vif = _variance_inflation_factor(reduced[columns])
+        if vif.empty or vif.max() <= threshold:
+            break
+
+        worst_col = vif.idxmax()
+        columns.remove(worst_col)
+
+    return reduced[columns]
+
+
+def train_catboost(
+    X_train,
+    X_valid,
+    y_train,
+    y_valid,
+    *,
+    iterations: int,
+    depth: int,
+    learning_rate: float,
+    od_wait: int,
+):
+    from catboost import CatBoostRegressor, Pool
+
     cat_model = CatBoostRegressor(
-        iterations=2000,
-        depth=6,
-        learning_rate=0.05,
+        iterations=iterations,
+        depth=depth,
+        learning_rate=learning_rate,
         random_state=RANDOM_STATE,
         loss_function="RMSE",
         od_type="Iter",
-        od_wait=50,
+        od_wait=od_wait,
         verbose=False,
+        allow_writing_files=False,
     )
 
     train_pool = Pool(X_train, y_train)
@@ -85,24 +228,40 @@ def train_catboost(X_train, X_valid, y_train, y_valid):
     return cat_model, {"mse": mse, "r2": r2}
 
 
-def train_xgboost(X_train, X_valid, y_train, y_valid):
+def train_xgboost(
+    X_train,
+    X_valid,
+    y_train,
+    y_valid,
+    *,
+    n_estimators: int,
+    learning_rate: float,
+    max_depth: int,
+    subsample: float,
+    colsample_bytree: float,
+    reg_lambda: float,
+    min_child_weight: float,
+    early_stopping_rounds: int,
+):
+    from xgboost import XGBRegressor
+
     imputer = SimpleImputer(strategy="median")
     X_train_imp = imputer.fit_transform(X_train)
     X_valid_imp = imputer.transform(X_valid)
 
     xgb_model = XGBRegressor(
-        n_estimators=2000,
-        learning_rate=0.03,
-        max_depth=4,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_lambda=1.0,
-        min_child_weight=1.0,
+        n_estimators=n_estimators,
+        learning_rate=learning_rate,
+        max_depth=max_depth,
+        subsample=subsample,
+        colsample_bytree=colsample_bytree,
+        reg_lambda=reg_lambda,
+        min_child_weight=min_child_weight,
         random_state=RANDOM_STATE,
         objective="reg:squarederror",
         tree_method="hist",
         eval_metric="rmse",
-        early_stopping_rounds=50,
+        early_stopping_rounds=early_stopping_rounds,
     )
 
     xgb_model.fit(
@@ -119,9 +278,9 @@ def train_xgboost(X_train, X_valid, y_train, y_valid):
     return xgb_model, imputer, {"mse": mse, "r2": r2}
 
 
-def compute_catboost_shap(
-    model: CatBoostRegressor, X_valid: pd.DataFrame, y_valid: pd.Series
-) -> pd.Series:
+def compute_catboost_shap(model, X_valid: pd.DataFrame, y_valid: pd.Series) -> pd.Series:
+    from catboost import Pool
+
     pool = Pool(X_valid, y_valid)
     shap_values = model.get_feature_importance(pool, type="ShapValues")
     shap_values = shap_values[:, :-1]
@@ -129,26 +288,240 @@ def compute_catboost_shap(
     return pd.Series(mean_abs_shap, index=X_valid.columns).sort_values(ascending=False)
 
 
-def main():
-    df = load_data(DATA_PATH)
-    X, y = prepare_features(df)
+def _summarise_metrics(metrics: list[dict[str, float]]) -> tuple[float, float]:
+    mse = np.mean([m["mse"] for m in metrics]) if metrics else float("nan")
+    r2 = np.mean([m["r2"] for m in metrics]) if metrics else float("nan")
+    return mse, r2
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
 
-    cat_metrics_list = []
-    xgb_metrics_list = []
-    shap_importances = []
+def _report_goal_attainment(
+    mse: float,
+    r2: float,
+    *,
+    mse_threshold: float,
+    r2_threshold: float,
+    mse_direction: str,
+    r2_direction: str,
+) -> str:
+    if mse_direction == "<=":
+        meets_mse = mse <= mse_threshold
+    else:
+        meets_mse = mse >= mse_threshold
 
-    print(f"--- Running 5-fold Cross-Validation ---")
-    print(f"Features: {X.shape[1]} | Total samples: {len(X)}")
+    if r2_direction == ">=":
+        meets_r2 = r2 >= r2_threshold
+    else:
+        meets_r2 = r2 <= r2_threshold
 
-    for fold, (train_index, valid_index) in enumerate(kf.split(X, y)):
-        print(f"\n--- Fold {fold+1}/5 ---")
+    return (
+        f"Goals -> MSE {'OK' if meets_mse else 'NOT OK'} ({mse_direction}{mse_threshold}), "
+        f"R^2 {'OK' if meets_r2 else 'NOT OK'} ({r2_direction}{r2_threshold})"
+    )
+
+
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train interpretable vacancy rate regressors.")
+    parser.add_argument(
+        "--data-path",
+        type=Path,
+        default=DATA_PATH,
+        help="Path to the wide feature CSV.",
+    )
+    parser.add_argument(
+        "--shap-output",
+        type=Path,
+        default=SHAP_OUTPUT_PATH,
+        help="Where to store the averaged CatBoost SHAP importances.",
+    )
+    parser.add_argument(
+        "--metrics-output",
+        type=Path,
+        default=METRICS_OUTPUT_PATH,
+        help="Where to store the averaged cross-validation metrics as JSON.",
+    )
+    parser.add_argument(
+        "--folds",
+        type=int,
+        default=5,
+        help="Number of cross-validation folds.",
+    )
+    parser.add_argument(
+        "--max-missing-ratio",
+        type=float,
+        default=DEFAULT_MAX_MISSING_RATIO,
+        help="Maximum allowed missing-value ratio per feature.",
+    )
+    parser.add_argument(
+        "--min-unique-values",
+        type=int,
+        default=DEFAULT_MIN_UNIQUE_VALUES,
+        help="Minimum number of unique values required per feature.",
+    )
+    parser.add_argument(
+        "--corr-threshold",
+        type=float,
+        default=DEFAULT_CORR_THRESHOLD,
+        help="Maximum allowed absolute pairwise correlation before dropping features.",
+    )
+    parser.add_argument(
+        "--vif-threshold",
+        type=float,
+        default=DEFAULT_VIF_THRESHOLD,
+        help="Maximum allowed variance inflation factor before dropping features.",
+    )
+    parser.add_argument(
+        "--mse-threshold",
+        type=float,
+        default=0.5,
+        help="Target threshold for the mean squared error metric.",
+    )
+    parser.add_argument(
+        "--mse-direction",
+        choices=["<=", ">="],
+        default="<=",
+        help="Whether the MSE goal is satisfied when the metric is <= or >= the threshold.",
+    )
+    parser.add_argument(
+        "--r2-threshold",
+        type=float,
+        default=0.5,
+        help="Target threshold for the R^2 metric.",
+    )
+    parser.add_argument(
+        "--r2-direction",
+        choices=[">=", "<="],
+        default=">=",
+        help="Whether the R^2 goal is satisfied when the metric is >= or <= the threshold.",
+    )
+    parser.add_argument(
+        "--catboost-iterations",
+        type=int,
+        default=2000,
+        help="Number of boosting iterations for CatBoost.",
+    )
+    parser.add_argument(
+        "--catboost-depth",
+        type=int,
+        default=6,
+        help="Tree depth for CatBoost.",
+    )
+    parser.add_argument(
+        "--catboost-learning-rate",
+        type=float,
+        default=0.05,
+        help="Learning rate for CatBoost.",
+    )
+    parser.add_argument(
+        "--catboost-od-wait",
+        type=int,
+        default=50,
+        help="Number of iterations with no improvement before CatBoost early stopping.",
+    )
+    parser.add_argument(
+        "--xgb-n-estimators",
+        type=int,
+        default=2000,
+        help="Number of boosting rounds for XGBoost.",
+    )
+    parser.add_argument(
+        "--xgb-learning-rate",
+        type=float,
+        default=0.03,
+        help="Learning rate for XGBoost.",
+    )
+    parser.add_argument(
+        "--xgb-max-depth",
+        type=int,
+        default=4,
+        help="Maximum tree depth for XGBoost.",
+    )
+    parser.add_argument(
+        "--xgb-subsample",
+        type=float,
+        default=0.8,
+        help="Subsample ratio of the training instances for XGBoost.",
+    )
+    parser.add_argument(
+        "--xgb-colsample-bytree",
+        type=float,
+        default=0.8,
+        help="Subsample ratio of columns when constructing each tree for XGBoost.",
+    )
+    parser.add_argument(
+        "--xgb-reg-lambda",
+        type=float,
+        default=1.0,
+        help="L2 regularisation term for XGBoost.",
+    )
+    parser.add_argument(
+        "--xgb-min-child-weight",
+        type=float,
+        default=1.0,
+        help="Minimum sum of instance weight needed in a child for XGBoost.",
+    )
+    parser.add_argument(
+        "--xgb-early-stopping",
+        type=int,
+        default=50,
+        help="Rounds of no improvement before XGBoost early stopping.",
+    )
+    return parser.parse_args(args=args)
+
+
+def main(cli_args: list[str] | None = None):
+    args = parse_args(cli_args)
+
+    df = load_data(args.data_path)
+    X, y = prepare_features(
+        df,
+        max_missing_ratio=args.max_missing_ratio,
+        min_unique_values=args.min_unique_values,
+        corr_threshold=args.corr_threshold,
+        vif_threshold=args.vif_threshold,
+    )
+
+    print("--- Dataset Overview ---")
+    print(f"Total records: {len(df)}")
+    print(f"Target mean: {y.mean():.3f} | Target std: {y.std():.3f}")
+    print(f"Selected features: {X.shape[1]} out of {df.shape[1]}")
+
+    kf = KFold(n_splits=args.folds, shuffle=True, random_state=RANDOM_STATE)
+
+    cat_metrics_list: list[dict[str, float]] = []
+    xgb_metrics_list: list[dict[str, float]] = []
+    shap_importances: list[pd.Series] = []
+
+    print(f"\n--- Running {args.folds}-fold Cross-Validation ---")
+
+    for fold, (train_index, valid_index) in enumerate(kf.split(X, y), start=1):
+        print(f"\n--- Fold {fold}/{args.folds} ---")
         X_train, X_valid = X.iloc[train_index], X.iloc[valid_index]
         y_train, y_valid = y.iloc[train_index], y.iloc[valid_index]
 
-        cat_model, cat_metrics = train_catboost(X_train, X_valid, y_train, y_valid)
-        _, _, xgb_metrics = train_xgboost(X_train, X_valid, y_train, y_valid)
+        cat_model, cat_metrics = train_catboost(
+            X_train,
+            X_valid,
+            y_train,
+            y_valid,
+            iterations=args.catboost_iterations,
+            depth=args.catboost_depth,
+            learning_rate=args.catboost_learning_rate,
+            od_wait=args.catboost_od_wait,
+        )
+        _, _, xgb_metrics = train_xgboost(
+            X_train,
+            X_valid,
+            y_train,
+            y_valid,
+            n_estimators=args.xgb_n_estimators,
+            learning_rate=args.xgb_learning_rate,
+            max_depth=args.xgb_max_depth,
+            subsample=args.xgb_subsample,
+            colsample_bytree=args.xgb_colsample_bytree,
+            reg_lambda=args.xgb_reg_lambda,
+            min_child_weight=args.xgb_min_child_weight,
+            early_stopping_rounds=args.xgb_early_stopping,
+        )
 
         cat_metrics_list.append(cat_metrics)
         xgb_metrics_list.append(xgb_metrics)
@@ -163,21 +536,42 @@ def main():
             f"XGBoost  - MSE: {xgb_metrics['mse']:.3f} | R^2: {xgb_metrics['r2']:.3f}"
         )
 
-    avg_cat_mse = np.mean([m["mse"] for m in cat_metrics_list])
-    avg_cat_r2 = np.mean([m["r2"] for m in cat_metrics_list])
-    avg_xgb_mse = np.mean([m["mse"] for m in xgb_metrics_list])
-    avg_xgb_r2 = np.mean([m["r2"] for m in xgb_metrics_list])
-    avg_shap_importance = (
-        pd.concat(shap_importances).groupby(level=0).mean().sort_values(ascending=False)
+    cat_mse, cat_r2 = _summarise_metrics(cat_metrics_list)
+    xgb_mse, xgb_r2 = _summarise_metrics(xgb_metrics_list)
+
+    shap_df = pd.concat(shap_importances, axis=1)
+    shap_df.columns = [f"fold_{i}" for i in range(1, len(shap_importances) + 1)]
+    avg_shap_importance = shap_df.mean(axis=1).sort_values(ascending=False)
+
+    args.shap_output.parent.mkdir(parents=True, exist_ok=True)
+    avg_shap_importance.to_csv(
+        args.shap_output, encoding="utf-8-sig", header=["mean_abs_shap"]
     )
 
     print("\n--- Average Cross-Validation Results ---")
     print("--- CatBoost ---")
-    print(f"Average MSE: {avg_cat_mse:.3f} | Average R^2: {avg_cat_r2:.3f}")
+    print(f"Average MSE: {cat_mse:.3f} | Average R^2: {cat_r2:.3f}")
+    goal_kwargs = {
+        "mse_threshold": args.mse_threshold,
+        "r2_threshold": args.r2_threshold,
+        "mse_direction": args.mse_direction,
+        "r2_direction": args.r2_direction,
+    }
+    print(_report_goal_attainment(cat_mse, cat_r2, **goal_kwargs))
     print("--- XGBoost ---")
-    print(f"Average MSE: {avg_xgb_mse:.3f} | Average R^2: {avg_xgb_r2:.3f}")
+    print(f"Average MSE: {xgb_mse:.3f} | Average R^2: {xgb_r2:.3f}")
+    print(_report_goal_attainment(xgb_mse, xgb_r2, **goal_kwargs))
     print("\n--- Average Top SHAP (CatBoost) ---")
     print(avg_shap_importance.head(10))
+
+    metrics_payload = {
+        "catboost": {"mse": cat_mse, "r2": cat_r2},
+        "xgboost": {"mse": xgb_mse, "r2": xgb_r2},
+    }
+
+    args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
+    with args.metrics_output.open("w", encoding="utf-8") as f:
+        json.dump(metrics_payload, f, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
