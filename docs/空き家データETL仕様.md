@@ -81,3 +81,4 @@ PYTHONPATH=. python scripts/etl/110_estat_housing_vacancy_clean.py \
   --config config/etl_project.yaml \
   --region yatsugatake_alps \
   --out data/processed/housing_vacancy__wide__v1_preview.csv
+```

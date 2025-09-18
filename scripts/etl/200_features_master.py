@@ -80,7 +80,7 @@ def main():
 
     # Paths
     p_feh2023_raw = repo_root / "data/raw/FEH_00200522_2023_2508.csv"
-    p_pop_long = repo_root / "data/processed/population_stats__v1__20250913__yatsugatake_alps.csv"
+    p_pop_long = repo_root / f"data/processed/population_stats__v1__{args.region}.csv"
     p_osm = repo_root / "data/processed/osm_density_with_pt_clinic.csv"
     p_land = repo_root / "data/processed/132_landprice_residential_median__wide__v1.csv"
     p_clim = repo_root / "data/processed/climate_city__v1.csv"
