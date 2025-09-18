@@ -103,6 +103,7 @@
   - `PYTHONPATH=. python scripts/ref/011_build_municipalities_geojson_from_osm.py --config config/etl_project.yaml --region yatsugatake_alps --no-network`
 - 気象ETL（八ヶ岳〜中部アルプス）:
   - `python scripts/etl/130_climate_city_from_ksj_g02_2022.py --pref-codes 19 20 21 22`
+  - `python scripts/etl/130_climate_city_from_ksj_g02_2022.py --region yatsugatake_alps`
 
 ## 既知の注意点
 - 境界: 政令市の親コードは除外（区レベル/有効な自治体のみ）

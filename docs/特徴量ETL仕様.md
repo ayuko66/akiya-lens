@@ -52,7 +52,7 @@
 - 依存: pandas
 - コマンド:
 ```bash
-python3 scripts/etl/200_features_master.py
+python3 scripts/etl/200_features_master.py --region yatsugatake_alps
 ```
 
 ## 関連仕様

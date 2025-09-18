@@ -40,6 +40,7 @@
     --config config/etl_project.yaml \
     --include-public-transport-stations \
     --include-clinics
+    --region yatsugatake_alps
   ```
 - キャッシュディレクトリ指定＋POI件数TTLを12時間に短縮
   ```bash
