@@ -20,10 +20,10 @@
 
 ## 出力データ
 - 年別ファイル
-  - `data/processed/population_stats_2018__v1__YYYYMMDD__[region].csv`
-  - `data/processed/population_stats_2023__v1__YYYYMMDD__[region].csv`
+  - `data/processed/population_stats_2018__v1__[region].csv`
+  - `data/processed/population_stats_2023__v1__[region].csv`
 - 縦持ちファイル
-  - `data/processed/population_stats__v1__YYYYMMDD__[region].csv`
+  - `data/processed/population_stats__v1__[region].csv`
 
 ---
 
