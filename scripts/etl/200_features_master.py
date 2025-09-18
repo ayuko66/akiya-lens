@@ -59,13 +59,23 @@ def pivot_population_wide(pop_long: pd.DataFrame) -> pd.DataFrame:
     use_cols = [c for c in base_cols + cols_keep if c in pop.columns]
     pop_narrow = pop[use_cols].copy()
 
-    # Pivot to wide with year prefix
-    pop_wide = pop_narrow.set_index(["市区町村コード", "市区町村名", "year"]).unstack(
-        "year"
+    # Remember the latest municipality name per code in case upstream data contain markers (e.g. "*")
+    name_lookup = (
+        pop_narrow[["市区町村コード", "市区町村名"]]
+        .dropna(subset=["市区町村コード"])
+        .drop_duplicates(subset=["市区町村コード"], keep="last")
     )
+
+    # Pivot to wide with year prefix using municipality code as the key
+    pop_wide = pop_narrow.drop(columns=["市区町村名"], errors="ignore").set_index(
+        ["市区町村コード", "year"]
+    ).unstack("year")
     # Flatten multiindex columns and rename to desired pattern: {year}_{col}
     pop_wide.columns = [f"{int(year)}_{col}" for col, year in pop_wide.columns]
     pop_wide = pop_wide.reset_index()
+
+    # Attach the name (will be overridden later with the city master canonical name)
+    pop_wide = pop_wide.merge(name_lookup, on="市区町村コード", how="left")
 
     return pop_wide
 
@@ -129,11 +139,32 @@ def main():
     # Base frame: municipalities from FEH 2023 raw
     df = base_codes.copy()
 
-    # Attach prefecture info from city master
-    citym_all = citym[
-        ["市区町村コード", "都道府県コード", "都道府県名"]
-    ].drop_duplicates()
+    # Attach canonical municipality / prefecture info from city master
+    citym_cols = [
+        "市区町村コード",
+        "市区町村名",
+        "都道府県コード",
+        "都道府県名",
+        "過疎地域市町村",
+        "都市種別",
+    ]
+    citym_all = (
+        citym[[c for c in citym_cols if c in citym.columns]]
+        .drop_duplicates(subset=["市区町村コード"])
+        .rename(
+            columns={
+                "市区町村名": "市区町村名_master",
+                "都道府県名": "都道府県名_master",
+            }
+        )
+    )
     df = df.merge(citym_all, on="市区町村コード", how="left")
+    df["市区町村名"] = df["市区町村名_master"].combine_first(df["市区町村名"])
+    existing_pref = df.get(
+        "都道府県名", pd.Series(pd.NA, index=df.index, dtype="object")
+    )
+    df["都道府県名"] = df["都道府県名_master"].combine_first(existing_pref)
+    df = df.drop(columns=["市区町村名_master", "都道府県名_master"])
 
     # Merge processed housing vacancy (wide) to bring 2018/2023 metrics where available
     hv_cols = [
@@ -244,13 +275,6 @@ def main():
                 "最高気温",
             ]
         ],
-        on="市区町村コード",
-        how="left",
-    )
-
-    # Merge city master (categorical flags)
-    df = df.merge(
-        citym[["市区町村コード", "過疎地域市町村", "都市種別"]],
         on="市区町村コード",
         how="left",
     )
