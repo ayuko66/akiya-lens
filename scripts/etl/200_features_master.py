@@ -60,11 +60,12 @@ def pivot_population_wide(pop_long: pd.DataFrame) -> pd.DataFrame:
     pop_narrow = pop[use_cols].copy()
 
     # Pivot to wide with year prefix
-    pop_wide = pop_narrow.set_index(["市区町村コード", "市区町村名", "year"]).unstack("year")
+    pop_wide = pop_narrow.set_index(["市区町村コード", "市区町村名", "year"]).unstack(
+        "year"
+    )
     # Flatten multiindex columns and rename to desired pattern: {year}_{col}
     pop_wide.columns = [f"{int(year)}_{col}" for col, year in pop_wide.columns]
     pop_wide = pop_wide.reset_index()
-
 
     return pop_wide
 
@@ -97,7 +98,9 @@ def main():
 
     # Load target prefecture codes from config (yatsugatake_alps by default)
     cfg = load_yaml(args.config)
-    pref_codes = cfg.get("study_regions", {}).get(args.region, {}).get("prefecture_codes", [])
+    pref_codes = (
+        cfg.get("study_regions", {}).get(args.region, {}).get("prefecture_codes", [])
+    )
     pref_codes = [str(c).zfill(2) for c in pref_codes]
 
     # Build base municipalities from FEH 2023 raw (exclude national/pref summaries)
@@ -107,13 +110,17 @@ def main():
     # Keep rows with 5-digit municipal codes; drop rows ending with '000' (prefecture-level)
     feh[code_col] = feh[code_col].astype(str).str.zfill(5)
     base_codes = (
-        feh[feh[code_col].str.match(r"^[0-9]{5}$") & ~feh[code_col].str.endswith("000")][[code_col, name_col]]
+        feh[
+            feh[code_col].str.match(r"^[0-9]{5}$") & ~feh[code_col].str.endswith("000")
+        ][[code_col, name_col]]
         .drop_duplicates()
         .rename(columns={code_col: "市区町村コード", name_col: "市区町村名"})
     )
     # Restrict to study region (config-driven). If empty, keep all.
     if pref_codes:
-        base_codes = base_codes[base_codes["市区町村コード"].str[:2].isin(pref_codes)].copy()
+        base_codes = base_codes[
+            base_codes["市区町村コード"].str[:2].isin(pref_codes)
+        ].copy()
     base_codes["市区町村コード"] = base_codes["市区町村コード"].astype("Int64")
 
     # Population wide
@@ -123,7 +130,9 @@ def main():
     df = base_codes.copy()
 
     # Attach prefecture info from city master
-    citym_all = citym[["市区町村コード", "都道府県コード", "都道府県名"]].drop_duplicates()
+    citym_all = citym[
+        ["市区町村コード", "都道府県コード", "都道府県名"]
+    ].drop_duplicates()
     df = df.merge(citym_all, on="市区町村コード", how="left")
 
     # Merge processed housing vacancy (wide) to bring 2018/2023 metrics where available
@@ -138,7 +147,11 @@ def main():
         "空き家_増加率_5年_%",
         "空き家率_差分_5年_pt",
     ]
-    df = df.merge(housing[[c for c in hv_cols if c in housing.columns]], on="市区町村コード", how="left")
+    df = df.merge(
+        housing[[c for c in hv_cols if c in housing.columns]],
+        on="市区町村コード",
+        how="left",
+    )
 
     # Compute 2023 vacancy metrics directly from raw FEH to fill gaps
     feh_sel = feh[[code_col, name_col, "総数", "空き家"]].copy()
@@ -146,13 +159,24 @@ def main():
     feh_sel = feh_sel[feh_sel[code_col].isin(df["市区町村コード"].astype(str))]
     # to numeric
     for c in ["総数", "空き家"]:
-        feh_sel[c] = pd.to_numeric(feh_sel[c].astype(str).str.replace(",", "", regex=False), errors="coerce")
+        feh_sel[c] = pd.to_numeric(
+            feh_sel[c].astype(str).str.replace(",", "", regex=False), errors="coerce"
+        )
     feh_sel = (
-        feh_sel.groupby([code_col], as_index=False)[["総数", "空き家"]].sum(min_count=1)
-        .rename(columns={code_col: "市区町村コード", "総数": "住宅総数_2023_raw", "空き家": "空き家_2023_raw"})
+        feh_sel.groupby([code_col], as_index=False)[["総数", "空き家"]]
+        .sum(min_count=1)
+        .rename(
+            columns={
+                code_col: "市区町村コード",
+                "総数": "住宅総数_2023_raw",
+                "空き家": "空き家_2023_raw",
+            }
+        )
     )
     feh_sel["市区町村コード"] = feh_sel["市区町村コード"].astype("Int64")
-    feh_sel["空き家率_2023_raw"] = (feh_sel["空き家_2023_raw"] / feh_sel["住宅総数_2023_raw"]) * 100
+    feh_sel["空き家率_2023_raw"] = (
+        feh_sel["空き家_2023_raw"] / feh_sel["住宅総数_2023_raw"]
+    ) * 100
     df = df.merge(feh_sel, on="市区町村コード", how="left")
     # Fill missing processed metrics with raw-derived ones
     for tgt, raw in [
@@ -164,53 +188,71 @@ def main():
             df[tgt] = df[tgt].fillna(df[raw])
 
     # Merge population (wide) by code only to avoid name mismatches
-    df = df.merge(pop_wide.drop(columns=["市区町村名"], errors="ignore"), on="市区町村コード", how="left")
+    df = df.merge(
+        pop_wide.drop(columns=["市区町村名"], errors="ignore"),
+        on="市区町村コード",
+        how="left",
+    )
 
     # Merge OSM (counts and area densities)
     df = df.merge(
-        osm[[
-            "市区町村コード",
-            "駅件数", "駅密度[件/km²]",
-            "スーパー件数", "スーパー密度[件/km²]",
-            "学校件数", "学校密度[件/km²]",
-            "病院件数", "病院密度[件/km²]",
-        ]],
-        on="市区町村コード", how="left",
+        osm[
+            [
+                "市区町村コード",
+                "駅件数",
+                "駅密度[件/km²]",
+                "スーパー件数",
+                "スーパー密度[件/km²]",
+                "学校件数",
+                "学校密度[件/km²]",
+                "病院件数",
+                "病院密度[件/km²]",
+            ]
+        ],
+        on="市区町村コード",
+        how="left",
     )
 
     # Merge land prices
     df = df.merge(
-        land[[
-            "市区町村コード",
-            "住宅地価_log中央値_2018",
-            "住宅地価_log中央値_2023",
-            "住宅地価_log差分",
-            "住宅地価_中央値_2018",
-            "住宅地価_中央値_2023",
-            "住宅地価_増減率[%]",
-            "標準地点数_2018",
-            "標準地点数_2023",
-        ]],
-        on="市区町村コード", how="left",
+        land[
+            [
+                "市区町村コード",
+                "住宅地価_log中央値_2018",
+                "住宅地価_log中央値_2023",
+                "住宅地価_log差分",
+                "住宅地価_中央値_2018",
+                "住宅地価_中央値_2023",
+                "住宅地価_増減率[%]",
+                "標準地点数_2018",
+                "標準地点数_2023",
+            ]
+        ],
+        on="市区町村コード",
+        how="left",
     )
 
     # Merge climate
     df = df.merge(
-        clim[[
-            "市区町村コード",
-            "平均気温",
-            "年最深積雪",
-            "年降水量",
-            "最低気温",
-            "最高気温",
-        ]],
-        on="市区町村コード", how="left",
+        clim[
+            [
+                "市区町村コード",
+                "平均気温",
+                "年最深積雪",
+                "年降水量",
+                "最低気温",
+                "最高気温",
+            ]
+        ],
+        on="市区町村コード",
+        how="left",
     )
 
     # Merge city master (categorical flags)
     df = df.merge(
         citym[["市区町村コード", "過疎地域市町村", "都市種別"]],
-        on="市区町村コード", how="left",
+        on="市区町村コード",
+        how="left",
     )
 
     # Compute population-adjusted densities for 2023

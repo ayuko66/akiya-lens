@@ -361,6 +361,7 @@ def _aggregate_age_csv(path: Path, encodings, year_out: int) -> pd.DataFrame:
     out["year"] = int(year_out)
     return out
 
+
 def _extract_simple_total(df: pd.DataFrame, out_col: str) -> pd.DataFrame:
     """出生/死亡CSVから、表章項目や性別を参照せず『総数』のみで集約して抽出。
 
@@ -485,13 +486,19 @@ def main():
     ap.add_argument("--deaths_file", default="population/FEH_00450011_2509_deaths.csv")
 
     # 転入・転出（2020–2023と2018を分けて指定）
-    ap.add_argument("--moving_in_file", default="population/FEH_00200523_2509_moving_in.csv")
     ap.add_argument(
-        "--moving_in_2018_file", default="population/FEH_00200523_2509_2018_moving_in.csv"
+        "--moving_in_file", default="population/FEH_00200523_2509_moving_in.csv"
     )
-    ap.add_argument("--moving_out_file", default="population/FEH_00200523_2509_moving_out.csv")
     ap.add_argument(
-        "--moving_out_2018_file", default="population/FEH_00200523_2509_2018_moving_out.csv"
+        "--moving_in_2018_file",
+        default="population/FEH_00200523_2509_2018_moving_in.csv",
+    )
+    ap.add_argument(
+        "--moving_out_file", default="population/FEH_00200523_2509_moving_out.csv"
+    )
+    ap.add_argument(
+        "--moving_out_2018_file",
+        default="population/FEH_00200523_2509_2018_moving_out.csv",
     )
 
     # 年齢別（任意） 2018 / 2022(→2023扱い)
@@ -501,11 +508,11 @@ def main():
     # 出力テンプレ
     ap.add_argument(
         "--out_long_template",
-        default="population_stats__${project.version}__${date:%Y%m%d}.csv",
+        default="population_stats__${project.version}.csv",
     )
     ap.add_argument(
         "--out_year_template",
-        default="population_stats_${year}__${project.version}__${date:%Y%m%d}.csv",
+        default="population_stats_${year}__${project.version}.csv",
     )
     args = ap.parse_args()
 
@@ -525,7 +532,9 @@ def main():
         if p_births and p_births.exists():
             births_df = _read_csv_auto(p_births, enc_in)
             births_sel = _extract_simple_total(births_df, out_col="出生数")
-            births_sel["市区町村コード"] = births_sel["市区町村コード"].astype(str).str.zfill(5)
+            births_sel["市区町村コード"] = (
+                births_sel["市区町村コード"].astype(str).str.zfill(5)
+            )
             births_sel["year"] = births_sel["year_raw"].apply(_to_year)
             births_sel.drop(columns=["year_raw"], inplace=True)
     # 死亡
@@ -534,7 +543,9 @@ def main():
         if p_deaths and p_deaths.exists():
             deaths_df = _read_csv_auto(p_deaths, enc_in)
             deaths_sel = _extract_simple_total(deaths_df, out_col="死亡数")
-            deaths_sel["市区町村コード"] = deaths_sel["市区町村コード"].astype(str).str.zfill(5)
+            deaths_sel["市区町村コード"] = (
+                deaths_sel["市区町村コード"].astype(str).str.zfill(5)
+            )
             deaths_sel["year"] = deaths_sel["year_raw"].apply(_to_year)
             deaths_sel.drop(columns=["year_raw"], inplace=True)
 
@@ -554,11 +565,11 @@ def main():
     # 3) 年齢別人口（総人口もここから採用）
     #    引数が未指定なら、プロジェクト標準の生データパスを自動採用
     if not args.age2018_file:
-        auto18 = (raw_dir / "population/1804ssnen.csv")
+        auto18 = raw_dir / "population/1804ssnen.csv"
         if auto18.exists():
             args.age2018_file = str(auto18.relative_to(raw_dir))
     if not args.age2022_file:
-        auto22 = (raw_dir / "population/2204ssnen.csv")
+        auto22 = raw_dir / "population/2204ssnen.csv"
         if auto22.exists():
             args.age2022_file = str(auto22.relative_to(raw_dir))
     age18 = pd.DataFrame()
@@ -653,11 +664,10 @@ def main():
     def _coalesce(dst: str):
         x, y = f"{dst}_x", f"{dst}_y"
         if x in base.columns or y in base.columns:
-            base[dst] = (
-                base[x] if x in base.columns else pd.NA
-            )
+            base[dst] = base[x] if x in base.columns else pd.NA
             if y in base.columns:
                 base[dst] = base[dst].fillna(base[y])
+
     for col in ["15歳未満人口", "15〜64歳人口", "65歳以上人口"]:
         _coalesce(col)
 
