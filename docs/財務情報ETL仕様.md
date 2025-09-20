@@ -1,4 +1,7 @@
-## 財務情報ETL: 市町村財政比較分析表 → fiscal_features.csv / fiscal_features__wide__delta__{ver}__{year0}_{year1}.csv
+# 財務情報ETL仕様
+
+市町村財政比較分析表 
+  → fiscal_features.csv / fiscal_features__wide__delta__{ver}__{year0}_{year1}.csv
 
 ### 目的
 - 総務省「市町村財政比較分析表」から空き家分析に使える財政指標を年度横断で抽出。
@@ -57,8 +60,36 @@
 - `data/processed/fiscal_features__wide__delta__{version}__{base}_{target}.csv` が生成され、欠損フラグ・変化量系の指標が揃っている。
 - いずれの CSV も UTF-8 BOM 付きで出力。
 
+### 実行例
+
+```bash
+# 財務指標のロングデータを再生成
+python scripts/etl/134_local_fiscal.py \
+  --input-dir data/raw/fiscal \
+  --output data/processed/fiscal_features.csv \
+  --encoding utf-8-sig
+
+# 最新年度と5年前を比較した横持ちデータを作成（ファイル名は自動決定）
+python scripts/etl/135_fiscal_change.py \
+  --source data/processed/fiscal_features.csv \
+  --config config/etl_project.yaml \
+  --encoding utf-8-sig
+```
+
+#### 主なオプション
+
+- `--input-dir` (`134_local_fiscal.py`): 財務CSVを置いたディレクトリ。既定は `data/raw/fiscal`。
+- `--output` : 出力先。省略時はロング版は `data/processed/fiscal_features.csv`、差分版は `data/processed/fiscal_features__wide__delta__{version}__{base}_{target}.csv`。
+- `--encoding` : 出力エンコーディング。既定は `utf-8-sig`。
+- `--years` (`134_local_fiscal.py`): 解析対象年度を明示する場合に指定（例 `--years 2018 2023`）。
+- `--source` (`135_fiscal_change.py`): 比較元となるロング版CSVのパス。既定は `data/processed/fiscal_features.csv`。
+- `--config` (`135_fiscal_change.py`): プロジェクト版数を取得する YAML。既定は `config/etl_project.yaml`。
+
 ### 参考
-- 総務省「市町村財政比較分析表（H30年度）」
-  - https://www.soumu.go.jp/iken/zaisei/h30_shichouson.html
+- 総務省「市町村財政比較分析表」
+  -（H30年度）
+    - https://www.soumu.go.jp/iken/zaisei/h30_shichouson.html
+  - (R5年度)
+    - https://www.soumu.go.jp/iken/zaisei/r05_shichouson.html
   
   
