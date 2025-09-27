@@ -13,6 +13,8 @@ from scripts.utils.config_loader import load_yaml
 
 def load_csv(path: Path, dtype_code="Int64") -> pd.DataFrame:
     df = pd.read_csv(path)
+    # Remove UTF-8 BOM if present so keys/columns merge cleanly
+    df.columns = [c.lstrip("\ufeff") for c in df.columns]
     # Normalize key
     if "市区町村コード" in df.columns:
         # Use pandas nullable integer to handle joins with NaNs safely
@@ -97,6 +99,7 @@ def main():
     p_clim = repo_root / "data/processed/climate_city__v1.csv"
     p_housing = repo_root / "data/processed/housing_vacancy__wide__v1_preview.csv"
     p_citym = repo_root / "data/master/city_master__all__v1_preview.csv"
+    p_fiscal_delta = repo_root / "data/processed/fiscal_features__wide__delta.csv"
 
     # Load
     pop_long = load_csv(p_pop_long)
@@ -105,6 +108,7 @@ def main():
     clim = load_csv(p_clim)
     housing = load_csv(p_housing)
     citym = load_csv(p_citym)
+    fiscal_delta = load_csv(p_fiscal_delta)
 
     # Load target prefecture codes from config (yatsugatake_alps by default)
     cfg = load_yaml(args.config)
@@ -166,6 +170,13 @@ def main():
     df["都道府県名"] = df["都道府県名_master"].combine_first(existing_pref)
     df = df.drop(columns=["市区町村名_master", "都道府県名_master"])
 
+    # Merge fiscal delta metrics (keep single canonical name column)
+    fiscal_delta = fiscal_delta.drop(
+        columns=[c for c in ["市区町村名_2018", "市区町村名_2023"] if c in fiscal_delta.columns],
+        errors="ignore",
+    )
+    df = df.merge(fiscal_delta, on="市区町村コード", how="left")
+
     # Merge processed housing vacancy (wide) to bring 2018/2023 metrics where available
     hv_cols = [
         "市区町村コード",
@@ -184,7 +195,7 @@ def main():
         how="left",
     )
 
-    # Compute 2023 vacancy metrics directly from raw FEH to fill gaps
+    # 統計調査（FEH）の生データから空き家数、住宅数の欠損値を補完
     feh_sel = feh[[code_col, name_col, "総数", "空き家"]].copy()
     feh_sel[code_col] = feh_sel[code_col].astype(str).str.zfill(5)
     feh_sel = feh_sel[feh_sel[code_col].isin(df["市区町村コード"].astype(str))]
