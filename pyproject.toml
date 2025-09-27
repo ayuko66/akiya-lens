@@ -28,6 +28,8 @@ dependencies = [
     "matplotlib>=3.10.6",
     "plotly>=6.3.0",
     "graphviz>=0.21",
+    "streamlit-folium>=0.25.2",
+    "branca>=0.8.1",
 ]
 
 [tool.uv]  # uv専用設定（任意）

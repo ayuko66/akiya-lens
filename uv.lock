@@ -12,6 +12,7 @@ name = "akiya-lens"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "branca" },
     { name = "catboost" },
     { name = "folium" },
     { name = "geopandas" },
@@ -29,11 +30,13 @@ dependencies = [
     { name = "shap" },
     { name = "shapely" },
     { name = "streamlit" },
+    { name = "streamlit-folium" },
     { name = "xgboost" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "branca", specifier = ">=0.8.1" },
     { name = "catboost", specifier = ">=1.2.8" },
     { name = "folium" },
     { name = "geopandas", specifier = ">=1.1.1" },
@@ -50,6 +53,7 @@ requires-dist = [
     { name = "shap" },
     { name = "shapely", specifier = ">=2.1.1" },
     { name = "streamlit" },
+    { name = "streamlit-folium", specifier = ">=0.25.2" },
     { name = "xgboost", specifier = ">=3.0.5" },
 ]
 
@@ -1931,6 +1935,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6a/06/cab0f4dcc7c092489b0ec0600fedbc3ffb219d6f1ab0d1878451a39c3da1/streamlit-1.49.0.tar.gz", hash = "sha256:22b48f9065435816405129c03e365725cc73759ed17c0efa929d40b4531f8bb0", size = 9640747, upload-time = "2025-08-26T19:40:48.33Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8c/9d/fe78a94ca379aa80e0e14900ce0e6276d339710a11039ad8700dc66a8014/streamlit-1.49.0-py3-none-any.whl", hash = "sha256:4defc9bcdaa6ee214ce25c1a8f660bcc410293a9e78a82251938793c8694a5ee", size = 10044260, upload-time = "2025-08-26T19:40:45.533Z" },
+]
+
+[[package]]
+name = "streamlit-folium"
+version = "0.25.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "branca" },
+    { name = "folium" },
+    { name = "jinja2" },
+    { name = "streamlit" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/10/13d52c0968dc86fa6ee5204bf780f37f5814e044ac76ea84feed071ced6f/streamlit_folium-0.25.2.tar.gz", hash = "sha256:066a769312e3d2aff6c69763cdd78e4cc7e1ca925ee47629a6561524edc860df", size = 522465, upload-time = "2025-09-22T19:37:17.718Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/56/a2/e43881dd41e2b7ea23bcc911d50ac9586802f1bc7ab4ba0892fa4f1e4f03/streamlit_folium-0.25.2-py3-none-any.whl", hash = "sha256:6c6212bcd181f5783698bb92a5ad71e80ce4f18d9f792f7bfa4c1b222bbdd220", size = 524438, upload-time = "2025-09-22T19:37:15.981Z" },
 ]
 
 [[package]]
