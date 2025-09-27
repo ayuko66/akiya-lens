@@ -82,6 +82,32 @@ def _safe_float(value: str) -> Optional[float]:
         return None
 
 
+def _normalize_city_code(raw: str) -> str:
+    """Return a zero-padded 5-digit municipality code when possible."""
+
+    if raw is None:
+        return ""
+
+    text = raw.strip().replace(" ", "").replace("\u3000", "")
+    if not text:
+        return ""
+
+    cleaned = text.replace("-", "")
+    # Some sources include decimals (e.g. `1303.0`); try numeric conversion first
+    try:
+        value = int(float(cleaned))
+    except ValueError:
+        value = None
+
+    if value is not None and value >= 0:
+        if value < 100000:
+            return f"{value:05d}"
+        return str(value)
+
+    # Fallback: pad to length 5 if shorter, otherwise return as-is
+    return cleaned.zfill(5) if len(cleaned) < 5 else cleaned
+
+
 def load_fiscal_rows(
     path: Path,
 ) -> Tuple[Dict[str, Dict[int, Dict[str, Optional[float]]]], List[int]]:
@@ -104,14 +130,17 @@ def load_fiscal_rows(
                 year = int(float(year_raw))
             except ValueError:
                 continue
-            code = row["市区町村コード"].strip()
+            code = _normalize_city_code(row.get("市区町村コード", ""))
             if not code:
                 continue
             store = result.setdefault(code, {})
             year_set.add(year)
             year_data = store.setdefault(year, {})
             for column in BASE_COLUMNS:
-                year_data[column] = row.get(column)
+                if column == "市区町村コード":
+                    year_data[column] = code
+                else:
+                    year_data[column] = row.get(column)
             for column in TARGET_COLUMNS:
                 year_data[column] = _safe_float(row.get(column))
     years_sorted = sorted(year_set)
