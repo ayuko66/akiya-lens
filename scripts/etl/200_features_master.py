@@ -1,7 +1,10 @@
 import argparse
+import json
 import sys
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
+from shapely.geometry import shape
 
 # Ensure project root on sys.path for local imports
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -9,6 +12,45 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.utils.config_loader import load_yaml
+
+
+def extract_centroids(geojson_path: Path) -> pd.DataFrame:
+    """Load municipality centroids from a GeoJSON file."""
+    if not geojson_path.exists():
+        return pd.DataFrame(columns=["市区町村コード", "centroid_lon", "centroid_lat"])
+
+    with geojson_path.open("r", encoding="utf-8") as fp:
+        geojson = json.load(fp)
+
+    rows = []
+    for feat in geojson.get("features", []):
+        props = feat.get("properties", {})
+        code = props.get("市区町村コード")
+        geom = feat.get("geometry")
+        if not code or not geom:
+            continue
+        try:
+            centroid = shape(geom).centroid
+        except Exception:
+            continue
+        if centroid.is_empty:
+            continue
+        try:
+            code_int = int(str(code))
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "市区町村コード": code_int,
+                "centroid_lon": centroid.x,
+                "centroid_lat": centroid.y,
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df["市区町村コード"] = df["市区町村コード"].astype("Int64")
+    return df
 
 
 def load_csv(path: Path, dtype_code="Int64") -> pd.DataFrame:
@@ -102,6 +144,7 @@ def main():
     p_housing = repo_root / "data/processed/housing_vacancy__wide__v1_preview.csv"
     p_citym = repo_root / "data/master/city_master__all__v1_preview.csv"
     p_fiscal_delta = repo_root / "data/processed/fiscal_features__wide__delta.csv"
+    p_geojson = repo_root / "data/geojson/municipalities.geojson"
 
     # Load
     pop_long = load_csv(p_pop_long)
@@ -111,6 +154,7 @@ def main():
     housing = load_csv(p_housing)
     citym = load_csv(p_citym)
     fiscal_delta = load_csv(p_fiscal_delta)
+    centroids = extract_centroids(p_geojson)
 
     # Load target prefecture codes from config (yatsugatake_alps by default)
     cfg = load_yaml(args.config)
@@ -171,6 +215,9 @@ def main():
     )
     df["都道府県名"] = df["都道府県名_master"].combine_first(existing_pref)
     df = df.drop(columns=["市区町村名_master", "都道府県名_master"])
+
+    if not centroids.empty:
+        df = df.merge(centroids, on="市区町村コード", how="left")
 
     # Merge fiscal delta metrics (keep single canonical name column)
     fiscal_delta = fiscal_delta.drop(
@@ -296,24 +343,40 @@ def main():
         how="left",
     )
 
-    # Compute population-adjusted densities for 2023
-    pop_col = "2023_総人口"
-    if pop_col in df.columns:
-        # Avoid division by zero
-        denom = pd.to_numeric(df[pop_col], errors="coerce").replace({0: pd.NA})
-        df["2023年総人口あたりのスーパー密度"] = df["スーパー件数"] / denom
-        df["2023年総人口あたりの学校密度"] = df["学校件数"] / denom
-        df["2023年総人口あたりの病院密度"] = df["病院件数"] / denom
-        df["2023年総人口あたりの駅密度"] = df["駅件数"] / denom
-    else:
-        # Create empty columns if population missing (should not happen for included areas)
-        for cname in [
-            "2023年総人口あたりのスーパー密度",
-            "2023年総人口あたりの学校密度",
-            "2023年総人口あたりの病院密度",
-            "2023年総人口あたりの駅密度",
-        ]:
-            df[cname] = pd.NA
+    # Compute population-adjusted densities for target years
+    density_specs = [
+        ("スーパー件数", "スーパー"),
+        ("学校件数", "学校"),
+        ("病院件数", "病院"),
+        ("駅件数", "駅"),
+    ]
+    for year in ["2023", "2018"]:
+        pop_col = f"{year}_総人口"
+        out_names = [
+            (count_col, f"{year}年総人口あたりの{label}密度")
+            for count_col, label in density_specs
+        ]
+        if pop_col in df.columns:
+            denom = pd.to_numeric(df[pop_col], errors="coerce").replace({0: pd.NA})
+            for count_col, out_col in out_names:
+                if count_col in df.columns:
+                    df[out_col] = df[count_col] / denom
+                else:
+                    df[out_col] = pd.NA
+        else:
+            for _, out_col in out_names:
+                df[out_col] = pd.NA
+
+    # Standardize centroid coordinates for modeling convenience
+    for col in ["centroid_lat", "centroid_lon"]:
+        if col in df.columns:
+            numeric = pd.to_numeric(df[col], errors="coerce")
+            mean = numeric.mean(skipna=True)
+            std = numeric.std(ddof=0, skipna=True)
+            if std and not pd.isna(std) and std != 0:
+                df[f"{col}_std"] = (numeric - mean) / std
+            else:
+                df[f"{col}_std"] = pd.NA
 
     # Reorder columns to match the requested list as much as possible
     desired_order = [
@@ -337,6 +400,7 @@ def main():
         # OSM + adjusted densities
         "スーパー件数",
         "スーパー密度[件/km²]",
+        "2018年総人口あたりのスーパー密度",
         "2023年総人口あたりのスーパー密度",
         # land price
         "住宅地価_log中央値_2018",
@@ -348,6 +412,7 @@ def main():
         # OSM school
         "学校件数",
         "学校密度[件/km²]",
+        "2018年総人口あたりの学校密度",
         "2023年総人口あたりの学校密度",
         # climate
         "平均気温",
@@ -355,12 +420,18 @@ def main():
         "年降水量",
         "最低気温",
         "最高気温",
+        # centroid coordinates
+        "centroid_lat",
+        "centroid_lon",
+        "centroid_lat_std",
+        "centroid_lon_std",
         # land standard points
         "標準地点数_2018",
         "標準地点数_2023",
         # hospitals
         "病院件数",
         "病院密度[件/km²]",
+        "2018年総人口あたりの病院密度",
         "2023年総人口あたりの病院密度",
         # vacancy
         "空き家_2018",
@@ -380,6 +451,7 @@ def main():
         # stations
         "駅件数",
         "駅密度[件/km²]",
+        "2018年総人口あたりの駅密度",
         "2023年総人口あたりの駅密度",
     ]
 

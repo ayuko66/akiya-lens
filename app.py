@@ -46,9 +46,7 @@ DATA_PATH = (
     REPO_ROOT / "data/processed/features_master__wide__v1.csv"
 )  # 市区町村データ(特徴量)
 GEOJSON_PATH = REPO_ROOT / "data/geojson/municipalities.geojson"  # 地図データ(geojson)
-MODEL_PATH = (
-    REPO_ROOT / "models/catboost_residual_model.cbm"
-)  # 学習済み残差モデル(CatBoost)
+MODEL_PATH = REPO_ROOT / "models/final_diff_model.cbm"  # 学習済みモデル(CatBoost)
 METRICS_PATH = REPO_ROOT / "data/processed/model_metrics.json"  # 評価メトリクス
 
 DEFAULT_TOLERANCE = 0.1  # "横ばい"とする閾値 (スライダーUIで調整可)
@@ -191,6 +189,37 @@ def build_model_feature_matrix(
     return matrix[feature_list], missing
 
 
+def enrich_diff_model_features(df: pd.DataFrame) -> pd.DataFrame:
+    """差分モデル用の前処理を適用し、学習時の特徴量を再生成する。"""
+
+    augmented = df.copy()
+
+    diff_specs = [
+        ("住宅地価_log中央値_変化量", "住宅地価_log中央値_2023", "住宅地価_log中央値_2018"),
+        ("Δ出生率", "2023_出生率[‰]", "2018_出生率[‰]"),
+        ("Δ死亡率", "2023_死亡率[‰]", "2018_死亡率[‰]"),
+        ("Δ年少人口率", "2023_年少人口率[%]", "2018_年少人口率[%]"),
+        ("Δ高齢化率", "2023_高齢化率[%]", "2018_高齢化率[%]"),
+        ("Δ生産年齢人口率", "2023_生産年齢人口率[%]", "2018_生産年齢人口率[%]"),
+        ("Δ転入超過率", "2023_転入超過率[‰]", "2018_転入超過率[‰]"),
+    ]
+
+    for new_col, col_recent, col_base in diff_specs:
+        if col_recent in augmented.columns and col_base in augmented.columns:
+            augmented[new_col] = _get_numeric_series(augmented, col_recent) - _get_numeric_series(
+                augmented, col_base
+            )
+
+    if "過疎地域市町村" in augmented.columns:
+        dummies = pd.get_dummies(
+            augmented["過疎地域市町村"], prefix="過疎地域市町村"
+        )
+        for col in dummies.columns:
+            augmented[col] = dummies[col]
+
+    return augmented
+
+
 # ---------------------------------------------------------------------------
 # Prediction & SHAP utilities
 # ---------------------------------------------------------------------------
@@ -226,7 +255,10 @@ def compute_predictions(
     if model is not None and hasattr(model, "feature_names_"):
         feature_names = list(model.feature_names_)
         if feature_names:
-            feature_matrix, missing = build_model_feature_matrix(df, feature_names)
+            augmented_df = enrich_diff_model_features(df)
+            feature_matrix, missing = build_model_feature_matrix(
+                augmented_df, feature_names
+            )
             if missing:
                 messages.append(
                     "学習済みモデルで使用した列が一部見つかりませんでした: "
@@ -291,13 +323,29 @@ def compute_shap_topk(
     if codes is not None:
         codes_prepared = codes.astype(str).str.zfill(5)
 
+    centroid_cols = {"centroid_lat_std", "centroid_lon_std"}
+
     for idx, row in shap_matrix.iterrows():
         if codes_prepared is not None and idx in codes_prepared.index:
             key = codes_prepared.loc[idx]
         else:
             key = str(idx)
-        top = row.abs().sort_values(ascending=False).head(k)
-        formatted = [f"{feat}: {row[feat]:+.3f}" for feat in top.index]
+        sorted_feats = row.abs().sort_values(ascending=False)
+        top_candidates = sorted_feats.head(max(k, 5))
+        filtered = [
+            feat for feat in top_candidates.index if feat not in centroid_cols
+        ]
+        if len(filtered) >= k:
+            selected = filtered[:k]
+        else:
+            # 足りない分は候補リストから補充（centroid列を含む場合あり）
+            selected = filtered + [
+                feat
+                for feat in top_candidates.index
+                if feat not in filtered
+            ][: k - len(filtered)]
+
+        formatted = [f"{feat}: {row[feat]:+.3f}" for feat in selected]
         top_lookup[key] = formatted
     return top_lookup, None
 

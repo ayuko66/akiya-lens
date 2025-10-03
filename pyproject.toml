@@ -17,8 +17,6 @@ dependencies = [
     "pydeck",
     "osm2geojson",
     "requests",
-    # "geopandas",
-    # "shapely",
     "pyproj", # 座標変換
     "pyyaml>=6.0.2",
     "geopandas>=1.1.1",
@@ -30,6 +28,8 @@ dependencies = [
     "graphviz>=0.21",
     "streamlit-folium>=0.25.2",
     "branca>=0.8.1",
+    "japanize-matplotlib>=1.1.3",
+    "optuna>=4.5.0",
 ]
 
 [tool.uv]  # uv専用設定（任意）
