@@ -282,6 +282,14 @@ def main():
         if tgt in df.columns and raw in df.columns:
             df[tgt] = df[tgt].fillna(df[raw])
 
+    # Drop rows missing vacancy rates required for modeling
+    if {"空き家率_2018", "空き家率_2023"}.issubset(df.columns):
+        before = len(df)
+        df = df.dropna(subset=["空き家率_2018", "空き家率_2023"])
+        dropped = before - len(df)
+        if dropped:
+            print(f"Dropped {dropped} municipalities lacking vacancy rates")
+
     # Merge population (wide) by code only to avoid name mismatches
     df = df.merge(
         pop_wide.drop(columns=["市区町村名"], errors="ignore"),
