@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import json
+import sys
 from pathlib import Path
+
+from typing import Any, Optional
 
 import japanize_matplotlib as jmp
 import numpy as np
@@ -8,6 +11,12 @@ import optuna
 import pandas as pd
 from catboost import CatBoostRegressor, Pool, cv  # ← ここが重要！
 import shap
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.models.diff_model_utils import compute_predictions, compute_shap_topk
 
 # データ読み込み
 df = pd.read_csv("data/processed/features_master__wide__v1.csv")
@@ -177,6 +186,23 @@ shap.summary_plot(shap_values_full_diff.values, X_full_diff)  # .valuesを明示
 
 final_diff_model.save_model("models/final_diff_model.cbm")
 
+enriched_df, feature_matrix_cached, predict_messages = compute_predictions(
+    df, final_diff_model
+)
+
+code_series = None
+if feature_matrix_cached is not None and "市区町村コード" in df.columns:
+    code_series = df.loc[feature_matrix_cached.index, "市区町村コード"]
+
+shap_lookup, shap_message = compute_shap_topk(
+    final_diff_model, feature_matrix_cached, codes=code_series
+)
+
+for msg in predict_messages:
+    print(f"[predict] {msg}")
+if shap_message:
+    print(f"[shap] {shap_message}")
+
 
 def _ensure_native(value):
     if isinstance(value, (np.floating,)):
@@ -184,6 +210,54 @@ def _ensure_native(value):
     if isinstance(value, (np.integer,)):
         return int(value)
     return value
+
+
+def _format_code(value) -> Optional[str]:
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    code_str = str(value)
+    if code_str.endswith(".0"):
+        code_str = code_str[:-2]
+    code_str = code_str.strip()
+    if not code_str:
+        return None
+    return code_str.zfill(5)
+
+
+inspector_payload: dict[str, dict[str, Any]] = {}
+if "市区町村コード" in enriched_df.columns:
+    for _, row in enriched_df.iterrows():
+        code = _format_code(row.get("市区町村コード"))
+        if not code:
+            continue
+
+        entry = {
+            "市区町村コード": code,
+            "市区町村名": row.get("市区町村名"),
+            "都道府県名": row.get("都道府県名"),
+            "空き家率_2018": _ensure_native(row.get("空き家率_2018")),
+            "空き家率_2023": _ensure_native(row.get("空き家率_2023")),
+            "Δ(23-18)": _ensure_native(row.get("Δ(23-18)")),
+            "pred_空き家率_2023": _ensure_native(row.get("pred_空き家率_2023")),
+            "残差(実測-予測)": _ensure_native(row.get("残差(実測-予測)")),
+            "baseline_pred_delta": _ensure_native(row.get("baseline_pred_delta")),
+            "residual_model_pred": _ensure_native(row.get("residual_model_pred")),
+            "pred_delta": _ensure_native(row.get("pred_delta")),
+            "tooltip": {
+                "akiya_name": row.get("市区町村名"),
+                "akiya_vac18": _ensure_native(row.get("空き家率_2018")),
+                "akiya_vac23": _ensure_native(row.get("空き家率_2023")),
+                "akiya_delta": _ensure_native(row.get("Δ(23-18)")),
+            },
+            "shap_top3": shap_lookup.get(code, []),
+        }
+
+        inspector_payload[code] = entry
+
+inspector_path = Path("data/processed/diff_model_inspector.json")
+inspector_path.parent.mkdir(parents=True, exist_ok=True)
+with inspector_path.open("w", encoding="utf-8") as handle:
+    json.dump(inspector_payload, handle, ensure_ascii=False, indent=2)
 
 
 metrics_payload = {
