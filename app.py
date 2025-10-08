@@ -51,7 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 DATA_PATH = (
     REPO_ROOT / "data/processed/features_master__wide__v1.csv"
 )  # 市区町村データ(特徴量)
-GEOJSON_PATH = REPO_ROOT / "data/geojson/municipalities.geojson"  # 地図データ(geojson)
+GEOJSON_PATH = REPO_ROOT / "data/geojson/municipalities_simplified.geojson"  # 地図データ(geojson)
 MODEL_PATH = REPO_ROOT / "models/final_diff_model.cbm"  # 学習済みモデル(CatBoost)
 METRICS_PATH = REPO_ROOT / "data/processed/model_metrics.json"  # 評価メトリクス
 INSPECTOR_PATH = REPO_ROOT / "data/processed/diff_model_inspector.json"
