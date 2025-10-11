@@ -1,4 +1,8 @@
 .venv/
 __pycache__/
 .streamlit/secrets.toml
-data/
+data/*
+!data/geojson/municipalities_simplified.geojson
+!data/processed/features_master__wide__v1.csv
+!data/processed/diff_model_inspector.json
+!data/processed/model_metrics.json
