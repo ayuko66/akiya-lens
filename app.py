@@ -1,7 +1,7 @@
 """Streamlit interface for the Akiya-Lens residual model.
 
-このアプリケーションは ``docs/残差モデルとアプリ設計仕様.md`` の仕様に従います。
-マスター特徴量テーブルをロードし、ベースライン + 残差パイプラインを再構築し、
+このアプリケーションは ``docs/モデルとアプリ設計仕様.md`` の仕様に従います。
+マスター特徴量テーブルをロードし、
 リスクカテゴリ、予測、SHAP由来の説明を含むインタラクティブな市町村マップをレンダリングします。
 
 """
@@ -43,6 +43,49 @@ from scripts.models.diff_model_utils import (
 )
 
 
+# ======= UI: CSS / helpers =======
+def inject_css() -> None:
+    import streamlit as st
+
+    st.markdown(
+        """
+    <style>
+    :root {
+       --card-bg: #ffffff;
+       --muted: #6b7280;
+       --border: #e5e7eb;
+    }
+    .akiya-card {
+       border: 1px solid var(--border);
+       border-radius: 14px;
+       padding: 14px 16px;
+       background: var(--card-bg);
+       box-shadow: 0 1px 2px rgba(0,0,0,.06);
+       margin-bottom: 10px;
+    }
+    .akiya-title { font-weight:700; font-size:1.1rem; margin-bottom:6px;}
+    .akiya-subtle { color: var(--muted); font-size: .9rem; }
+    .akiya-badges { display:flex; flex-wrap: wrap; gap:6px; margin:.25rem 0 .5rem; }
+    .akiya-pill { padding: 2px 10px; border-radius: 999px; font-size:.78rem; border: 1px solid var(--border); background:#f3f4f6;}
+    .small-metric .stMetric { font-size: 12px !important; }
+    .small-metric [data-testid="stMetricValue"] { font-size: 14px !important; color: var(--muted);}
+    .akiya-muted { color: var(--muted); }
+    .akiya-log li{ color:#6b7280;}
+    </style>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
+def risk_badge(label: str) -> str:
+    color = RISK_LEVELS.get(label, {}).get("color", "#999999")
+    text = label.replace("(", "").replace(")", "")
+    return (
+        f'<span class="akiya-pill" '
+        f'style="background:{color}22;border-color:{color}55;color:{color}">{text}</span>'
+    )
+
+
 # ---------------------------------------------------------------------------
 # Paths & constants
 # ---------------------------------------------------------------------------
@@ -51,7 +94,9 @@ REPO_ROOT = Path(__file__).resolve().parent
 DATA_PATH = (
     REPO_ROOT / "data/processed/features_master__wide__v1.csv"
 )  # 市区町村データ(特徴量)
-GEOJSON_PATH = REPO_ROOT / "data/geojson/municipalities_simplified.geojson"  # 地図データ(geojson)
+GEOJSON_PATH = (
+    REPO_ROOT / "data/geojson/municipalities_simplified.geojson"
+)  # 地図データ(geojson)
 MODEL_PATH = REPO_ROOT / "models/final_diff_model.cbm"  # 学習済みモデル(CatBoost)
 METRICS_PATH = REPO_ROOT / "data/processed/model_metrics.json"  # 評価メトリクス
 INSPECTOR_PATH = REPO_ROOT / "data/processed/diff_model_inspector.json"
@@ -62,14 +107,13 @@ MAP_OPTIONS = (
     "4段階リスク",
     "2023年空き家率（実測）",
     "2023年空き家率（予測）",
-    "残差（実測−予測）",
 )
 # リスクラベル定義（色・凡例テキストを一元管理）
 RISK_LEVELS = {
     "(最優先)": {"color": "#d73027", "legend": "赤(最優先) 高・➚"},
-    "(注意)": {"color": "#fc8d59", "legend": "オレンジ(注意) 高・横/↓"},
+    "(注意)": {"color": "#fc8d59", "legend": "オレンジ(注意) 高・➙"},
     "(警戒)": {"color": "#fee08b", "legend": "黄(警戒) 低・➚"},
-    "(低)": {"color": "#1a9850", "legend": "緑(低) 低・横/↓"},
+    "(低)": {"color": "#1a9850", "legend": "緑(低) 低・➙"},
 }
 
 # 高低×トレンドの組合せごとのラベル割り当て
@@ -237,9 +281,11 @@ def build_static_geojson(
 
         props["akiya_has_data"] = True
         tooltip_info = tooltip_lookup.get(code) if tooltip_lookup else None
-        props["akiya_name"] = tooltip_info.get("akiya_name") if isinstance(
-            tooltip_info, dict
-        ) and tooltip_info.get("akiya_name") else record.get("市区町村名", "不明")
+        props["akiya_name"] = (
+            tooltip_info.get("akiya_name")
+            if isinstance(tooltip_info, dict) and tooltip_info.get("akiya_name")
+            else record.get("市区町村名", "不明")
+        )
         props["akiya_vac18"] = _safe_value(
             tooltip_info.get("akiya_vac18")
             if isinstance(tooltip_info, dict) and "akiya_vac18" in tooltip_info
@@ -251,7 +297,7 @@ def build_static_geojson(
             else record.get("空き家率_2023")
         )
         props["akiya_pred"] = _safe_value(record.get("pred_空き家率_2023"))
-        props["akiya_residual"] = _safe_value(record.get("残差(実測-予測)"))
+        props["akiya_residual"] = _safe_value(record.get("△(実測-予測)"))
         props["akiya_delta"] = _safe_value(
             tooltip_info.get("akiya_delta")
             if isinstance(tooltip_info, dict) and "akiya_delta" in tooltip_info
@@ -466,8 +512,9 @@ def build_map(
 
 def main() -> None:
     st.set_page_config(page_title="Akiya-Lens", layout="wide")
-    st.title("🏠 Akiya-Lens 残差モデルビューア")
-    st.caption("2018→2023 空き家率のベースライン + 残差モデル解析")
+    inject_css()
+    st.title("🏠 Akiya-Lens 空き家率モデルビューア")
+    st.caption("2018→2023 空き家の要因分析MAP")
 
     try:
         features_df = load_features(DATA_PATH)
@@ -480,9 +527,7 @@ def main() -> None:
     model = load_catboost_model(MODEL_PATH)
     if INSPECTOR_PATH.exists():
         inspector_signature: Optional[float] = INSPECTOR_PATH.stat().st_mtime
-        inspector_payload = load_inspector_payload(
-            INSPECTOR_PATH, inspector_signature
-        )
+        inspector_payload = load_inspector_payload(INSPECTOR_PATH, inspector_signature)
     else:
         inspector_signature = None
         inspector_payload = {}
@@ -497,14 +542,17 @@ def main() -> None:
             )
         if metrics:
             st.subheader("モデル指標")
+            st.markdown('<div class="small-metric">', unsafe_allow_html=True)
             cat_metrics = metrics.get("catboost")
             if cat_metrics:
-                st.metric("CatBoost R²", f"{cat_metrics.get('r2', np.nan):.3f}")
-                st.metric("CatBoost MSE", f"{cat_metrics.get('mse', np.nan):.3f}")
+                r2 = cat_metrics.get("r2", np.nan)
+                mse = cat_metrics.get("mse", np.nan)
+                rmse = float(mse) ** 0.5 if pd.notna(mse) else np.nan
+                st.metric("R²", f"{r2:.3f}")
+                st.metric("RMSE", f"{rmse:.3f}")
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    cache_stale = (
-        st.session_state.get("inspector_signature") != inspector_signature
-    )
+    cache_stale = st.session_state.get("inspector_signature") != inspector_signature
 
     if "model_cache" not in st.session_state or cache_stale:
         if inspector_payload:
@@ -521,7 +569,9 @@ def main() -> None:
                     tooltip_lookup_once[code_str] = tooltip_info
 
                 record = {
-                    "市区町村コード": str(payload.get("市区町村コード", code_str)).zfill(5),
+                    "市区町村コード": str(
+                        payload.get("市区町村コード", code_str)
+                    ).zfill(5),
                     "baseline_pred_delta": payload.get("baseline_pred_delta"),
                     "residual_model_pred": payload.get("residual_model_pred"),
                     "pred_delta": payload.get("pred_delta"),
@@ -543,7 +593,7 @@ def main() -> None:
                     "residual_model_pred",
                     "pred_delta",
                     "pred_空き家率_2023",
-                    "残差(実測-予測)",
+                    "△(実測-予測)",
                     "Δ(23-18)",
                 ]
                 for col in pred_cols:
@@ -627,13 +677,6 @@ def main() -> None:
             else {}
         )
         legend = "予測空き家率 (%)"
-    elif map_option == "残差（実測−予測）":
-        map_lookup = (
-            classified_df.set_index("市区町村コード")["残差(実測-予測)"].to_dict()
-            if "市区町村コード" in classified_df.columns
-            else {}
-        )
-        legend = "残差 (pt)"
     else:
         map_lookup = {}
         legend = ""
@@ -676,37 +719,19 @@ def main() -> None:
             st.session_state["selected_code"] = selected_code
 
     with inspector_col:
-        st.subheader("自治体インスペクタ")
-        if not selected_code:
-            st.info("地図上の自治体をクリックすると詳細を表示します。")
-        else:
-            row = classified_df[
-                classified_df["市区町村コード"].astype(str).str.zfill(5)
-                == selected_code
-            ]
-            if row.empty:
-                st.warning("選択した自治体のデータが見つかりません。")
-            else:
-                record = row.iloc[0]
-                st.markdown(f"### {record.get('市区町村名', '不明')} ({selected_code})")
-                st.markdown(
-                    f"- **空き家率** 2018: {record.get('空き家率_2018', np.nan):.2f}% / 2023: {record.get('空き家率_2023', np.nan):.2f}%"
-                )
-                st.markdown(
-                    f"- **Δ(23-18):** {record.get('Δ(23-18)', np.nan):.2f} pt | **リスク:** {risk_lookup.get(selected_code, DEFAULT_RISK_LABEL)} | **トレンド:** {trend_lookup.get(selected_code, '')}"
-                )
-                st.markdown(
-                    f"- **予測空き家率(2023):** {record.get('pred_空き家率_2023', np.nan):.2f}% | **残差:** {record.get('残差(実測-予測)', np.nan):.2f} pt"
-                )
-                top_factors = shap_lookup.get(selected_code)
-                st.markdown("- **要因Top3**")
-                if top_factors:
-                    for item in top_factors:
-                        st.markdown(f"- {item}")
-                else:
-                    st.markdown("  - SHAP情報なし")
+        render_inspector(
+            selected_code, classified_df, shap_lookup, risk_lookup, trend_lookup
+        )
 
     st.subheader("自治体別テーブル")
+    residual_col = next(
+        (
+            col
+            for col in ("△(実測-予測)", "残差(実測-予測)")
+            if col in classified_df.columns
+        ),
+        None,
+    )
     table_cols = [
         "市区町村コード",
         "市区町村名",
@@ -717,10 +742,17 @@ def main() -> None:
         "リスク区分",
         "トレンド",
         "pred_空き家率_2023",
-        "残差(実測-予測)",
     ]
+    if residual_col:
+        table_cols.append(residual_col)
     existing_cols = [col for col in table_cols if col in classified_df.columns]
     table_data = classified_df[existing_cols].copy()
+    table_data = table_data.rename(
+        columns={
+            "pred_空き家率_2023": "空き家率(予測)",
+            "残差(実測-予測)": "△(実測-予測)",
+        }
+    )
     if "リスク区分" in table_data.columns:
         table_data = table_data.sort_values("リスク区分")
     st.dataframe(table_data, use_container_width=True)
@@ -733,6 +765,106 @@ def main() -> None:
             st.markdown(f"- {msg}")
 
     st.caption("データソース: data/processed/features_master__wide__v1.csv 他")
+
+
+def render_inspector(
+    selected_code: Optional[str],
+    df: pd.DataFrame,
+    shap_lookup: dict[str, list[str]],
+    risk_lookup: dict[str, str],
+    trend_lookup: dict[str, str],
+) -> None:
+    st.subheader("自治体インスペクタ")
+    if not selected_code:
+        st.info("地図上の自治体をクリックすると詳細を表示します。")
+        return
+
+    row = df[df["市区町村コード"].astype(str).str.zfill(5) == selected_code]
+    if row.empty:
+        st.warning("選択した自治体のデータが見つかりません。")
+        return
+
+    rec = row.iloc[0]
+
+    # 小さなフォーマッタ
+    def fmt_pct(x):
+        return "–" if pd.isna(x) else f"{float(x):.2f}%"
+
+    def fmt_delta(x):
+        return "" if pd.isna(x) else f"{float(x):+.2f} pt"
+
+    vac18 = rec.get("空き家率_2018", np.nan)
+    vac23 = rec.get("空き家率_2023", np.nan)
+    delta = rec.get("Δ(23-18)", np.nan)
+    pred = rec.get("pred_空き家率_2023", np.nan)
+    resid = rec.get("△(実測-予測", rec.get("残差(実測-予測)", np.nan))
+
+    # ★ HTMLの<div>ラッパは使わず、公式のコンテナに変更（余計な枠が出ない）
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="akiya-title">🏘️ {rec.get("市区町村名","不明")} '
+            f'<span class="akiya-subtle">({selected_code})</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            '<div class="akiya-badges">'
+            + risk_badge(risk_lookup.get(selected_code, DEFAULT_RISK_LABEL))
+            + f'<span class="akiya-pill">{trend_lookup.get(selected_code,"")}</span>'
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+        # 値が切れないように 2018 と 2023 を分けて表示
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric("空き家率 2018", fmt_pct(vac18))
+        with c2:
+            st.metric("空き家率 2023", fmt_pct(vac23), delta=fmt_delta(delta))
+
+        # 予測/残差は“参考表示”として控えめに
+        st.markdown(
+            f'<div class="akiya-muted">予測(2023): {fmt_pct(pred)} / 残差: {fmt_delta(resid)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        tab1, tab2 = st.tabs(["要因 Top3", "生データ"])
+        with tab1:
+            top_factors = shap_lookup.get(selected_code) or []
+            if top_factors:
+                for item in top_factors:
+                    st.markdown(f"- {item}")
+            else:
+                st.caption("SHAP情報なし")
+
+        with tab2:
+            # 列名ゆらぎを吸収
+            residual_show_col = next(
+                (
+                    col
+                    for col in ("△(実測-予測)", "残差(実測-予測)")
+                    if col in df.columns
+                ),
+                None,
+            )
+            show_cols = [
+                "都道府県名",
+                "市区町村名",
+                "空き家率_2018",
+                "空き家率_2023",
+                "Δ(23-18)",
+                "pred_空き家率_2023",
+            ]
+            if residual_show_col:
+                show_cols.append(residual_show_col)
+            show_cols = [c for c in show_cols if c in df.columns]
+
+            detail_df = row[show_cols].rename(
+                columns={
+                    "pred_空き家率_2023": "空き家率(予測)",
+                    "残差(実測-予測)": "△(実測-予測)",
+                }
+            )
+            st.dataframe(detail_df, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":

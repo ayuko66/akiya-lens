@@ -106,13 +106,9 @@ def objective(trial: optuna.Trial) -> float:
     params.update(
         {
             "iterations": trial.suggest_int("iterations", 400, 1600, step=100),
-            "learning_rate": trial.suggest_float(
-                "learning_rate", 0.01, 0.3, log=True
-            ),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "depth": trial.suggest_int("depth", 4, 10),
-            "l2_leaf_reg": trial.suggest_float(
-                "l2_leaf_reg", 0.1, 20.0, log=True
-            ),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 0.1, 20.0, log=True),
             "rsm": trial.suggest_float("rsm", 0.6, 1.0),
             "bootstrap_type": bootstrap_type,
         }
@@ -172,9 +168,9 @@ cv_result_best = cv(
     early_stopping_rounds=50,
 )
 rmse_full_cv_diff = float(cv_result_best["test-RMSE-mean"].min())
-r2_full_cv_diff = float(cv_result_best["test-R2-mean"].iloc[
-    cv_result_best["test-RMSE-mean"].idxmin()
-])
+r2_full_cv_diff = float(
+    cv_result_best["test-R2-mean"].iloc[cv_result_best["test-RMSE-mean"].idxmin()]
+)
 
 print(f"Tuned Model Cross-Validation RMSE (5-fold min mean): {rmse_full_cv_diff:.3f}")
 print(f"Tuned Model Cross-Validation R² (corresponding mean): {r2_full_cv_diff:.3f}")
