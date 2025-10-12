@@ -16,6 +16,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from dotenv import load_dotenv
+
+load_dotenv(override=False)  # .env → os.environ へ読み込み
+
 try:
     import folium
     from folium import features
@@ -29,6 +33,17 @@ except ImportError:  # pragma: no cover - handled gracefully in UI
     MacroElement = None
     Template = None
     st_folium = None
+
+# ==== add: Groq client ====
+try:
+    from groq import Groq
+except ImportError:  # pragma: no cover
+    Groq = None
+
+import os
+import hashlib
+import textwrap
+
 
 try:
     from catboost import CatBoostRegressor, Pool
@@ -101,6 +116,10 @@ MODEL_PATH = REPO_ROOT / "models/final_diff_model.cbm"  # 学習済みモデル(
 METRICS_PATH = REPO_ROOT / "data/processed/model_metrics.json"  # 評価メトリクス
 INSPECTOR_PATH = REPO_ROOT / "data/processed/diff_model_inspector.json"
 
+AI_CACHE_DIR = (
+    REPO_ROOT / "data/processed" / "ai_cache"
+)  # 再学習で署名が変わるまで生成AI結果をキャッシュ
+
 DEFAULT_TOLERANCE = 0.1  # "横ばい"とする閾値 (スライダーUIで調整可)
 # 市区町村塗りつぶしセレクト
 MAP_OPTIONS = (
@@ -130,6 +149,12 @@ RISK_LEGEND_ORDER = ["(最優先)", "(注意)", "(警戒)", "(低)"]
 DEFAULT_RISK_LABEL = "(低)"
 
 NAN_COLOR = "#d9d9d9"
+
+# --- 生成AI文言 Groq 共通注意文を定義 ---
+COMMON_FIXED_NOTES = [
+    "空き家率の増加は、複数の要因による結果である可能性があるため、単一の対策では解決できない可能性がある",
+    "SHAP分析は、特定の要因の寄与度を算出するため、データの偏りや欠陥が影響する可能性がある",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +792,163 @@ def main() -> None:
     st.caption("データソース: data/processed/features_master__wide__v1.csv 他")
 
 
+# ---------------------------------------------------------------------------
+# Groqヘルパ
+# ---------------------------------------------------------------------------
+def _active_signature() -> str:
+    """再学習で変わる署名。なければモデルmtimeを代用。"""
+    import streamlit as st
+
+    sig = st.session_state.get("inspector_signature")
+    if sig is None and MODEL_PATH.exists():
+        sig = MODEL_PATH.stat().st_mtime
+    return str(sig or "0")
+
+
+def _ai_cache_path(signature: str) -> Path:
+    AI_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return AI_CACHE_DIR / f"groq_cache__{signature}.json"
+
+
+@st.cache_resource(show_spinner=False)
+def _load_ai_cache(signature: str) -> dict:
+    p = _ai_cache_path(signature)
+    if p.exists():
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _save_ai_cache(signature: str, data: dict) -> None:
+    p = _ai_cache_path(signature)
+    tmp = p.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(p)
+
+
+def _ai_cache_key(model: str, payload: dict) -> str:
+    # 既存の _fingerprint_payload を再利用
+    return f"{model}:{_fingerprint_payload(payload)}"
+
+
+def _get_groq_client() -> Optional["Groq"]:
+    """st.secrets または 環境変数から API Key を取得して Groq クライアントを返す。"""
+    if Groq is None:
+        return None
+    api_key = None
+    try:
+        import streamlit as st
+
+        api_key = st.secrets.get("GROQ_API_KEY", None)
+    except Exception:
+        pass
+    api_key = api_key or os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        return None
+    try:
+        return Groq(api_key=api_key)
+    except Exception:
+        return None
+
+
+def _fingerprint_payload(payload: dict) -> str:
+    """内容が同じなら再利用できるようにキャッシュキーを作る。"""
+    blob = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+# --- 既存の generate_ai_suggestion_with_groq を置き換え ---
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+def generate_ai_suggestion_with_groq(
+    payload: dict, model: str = "llama-3.1-8b-instant"
+) -> dict:
+    """
+    Groqに「超簡潔テンプレ」で問い合わせ、JSONを受け取りMarkdown化して返す。
+    返り値: {'ok': bool, 'text': str, 'raw': dict, 'usage': dict|None}
+    """
+    client = _get_groq_client()
+    if client is None:
+        return {
+            "ok": False,
+            "text": "🔑 GROQ_API_KEY が未設定のため実行できません。",
+            "raw": {},
+            "usage": None,
+        }
+
+    # --- テンプレ（LLMには“これだけ”を埋めてもらう） ---
+    system = (
+        "あなたは日本の空き家対策に詳しいDXコンサルタント。"
+        "出力は JSON オブジェクトのみ。必ず次のスキーマに従う："
+        '{"analysis":["..."],"ideas":["..."]}'
+        "制約："
+        "- 文体は短文・箇条書き。各文は50字以内。"
+        "- 数値は新たに作らない（入力値のみ言及可）。"
+        "- 分析は最大2点、提案は最大3点。重複や抽象表現は避ける。"
+        "- 固有名詞は必要最小限。一般名詞で具体策を示す。"
+        "- 出力に説明文や接頭辞・接尾辞を付けない（JSONのみ）。"
+    )
+
+    user = f"""
+    # 入力
+    市区町村: {payload.get('pref_name')} {payload.get('city_name')}（{payload.get('city_code')}）
+    空き家率2018: {payload.get('vac18')}
+    空き家率2023: {payload.get('vac23')}
+    変化pt(23-18): {payload.get('delta')}
+    リスク区分: {payload.get('risk_label')}
+    トレンド: {payload.get('trend')}
+    SHAP要因Top3:
+    - {payload.get('factor1')}
+    - {payload.get('factor2')}
+    - {payload.get('factor3')}
+
+    # 出力形式（厳守）
+    {{
+      "analysis": ["短文1","短文2"],     // 市況の含意や解釈（最大2）
+      "ideas":    ["施策1","施策2","施策3"] // 実行可能な対策（最大3）
+    }}
+    """
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            max_tokens=400,
+        )
+        content = resp.choices[0].message.content if resp.choices else ""
+        usage = getattr(resp, "usage", None)
+
+        data = json.loads(content) if content else {"analysis": [], "ideas": []}
+
+        # Markdown 整形（共通注意文はここでは入れない）
+        blocks = []
+
+        if data.get("analysis"):
+            block = ["**要因分析**"]
+            block += [f"- {x}" for x in data["analysis"][:2]]
+            blocks.append("\n".join(block))
+
+        if data.get("ideas"):
+            block = ["**利活用提案**"]
+            block += [f"- {x}" for x in data["ideas"][:3]]
+            blocks.append("\n".join(block))
+
+        # ← ポイント：セクション間は \n\n で結合して1行の空白行を入れる
+        text = "\n\n".join(blocks) if blocks else "（出力なし）"
+
+        return {"ok": True, "text": text, "raw": data, "usage": usage}
+    except Exception as e:
+        return {"ok": False, "text": f"APIエラー: {e}", "raw": {}, "usage": None}
+
+
 def render_inspector(
     selected_code: Optional[str],
     df: pd.DataFrame,
@@ -827,7 +1009,7 @@ def render_inspector(
             unsafe_allow_html=True,
         )
 
-        tab1, tab2 = st.tabs(["要因 Top3", "生データ"])
+        tab1, tab2, tab3 = st.tabs(["要因 Top3", "生データ", "AI提案(Groq)"])
         with tab1:
             top_factors = shap_lookup.get(selected_code) or []
             if top_factors:
@@ -865,6 +1047,77 @@ def render_inspector(
                 }
             )
             st.dataframe(detail_df, use_container_width=True, hide_index=True)
+
+        with tab3:
+            # モデル選択（簡易）
+            model = st.selectbox(
+                "モデル",
+                options=["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+                index=0,
+                help="速度重視: 8B / 品質重視: 70B",  # 実運用は8B推奨
+            )
+
+            # ペイロード作成
+            factors = (shap_lookup.get(selected_code) or []) + ["", "", ""]
+            payload = {
+                "city_code": selected_code,
+                "pref_name": rec.get("都道府県名", ""),
+                "city_name": rec.get("市区町村名", ""),
+                "vac18": rec.get("空き家率_2018", ""),
+                "vac23": rec.get("空き家率_2023", ""),
+                "delta": rec.get("Δ(23-18)", ""),
+                "risk_label": risk_lookup.get(selected_code, ""),
+                "trend": trend_lookup.get(selected_code, ""),
+                "factor1": factors[0],
+                "factor2": factors[1],
+                "factor3": factors[2],
+            }
+            sig = _active_signature()
+            cache_db = _load_ai_cache(sig)
+            ckey = _ai_cache_key(model, payload)
+
+            # 実行UI
+            colA, colB, colC = st.columns([1, 1, 2])
+            with colA:
+                go = st.button("💡 提案を生成", type="primary")
+            with colB:
+                force_refresh = st.button("🔄 再生成")
+                # st.caption(
+                #     "※ 送るのは【自治体名/コード・空き家率・トレンド・SHAP上位3つの説明】のみ。機密データは送信しません。"
+                # )
+            with colC:
+                use_cache = st.toggle(
+                    "キャッシュ優先",
+                    value=True,
+                    help="再学習(署名変更)までは問い合わせず再利用します",
+                )
+
+            # 実行
+            if go:
+                if use_cache and not force_refresh and ckey in cache_db:
+                    st.markdown(cache_db[ckey]["text"])
+                    st.caption(f"🧠 cached • {cache_db[ckey].get('ts','')}")
+                else:
+                    with st.spinner("Groqに問い合わせ中…"):
+                        result = generate_ai_suggestion_with_groq(payload, model=model)
+                    if result["ok"]:
+                        st.markdown(result["text"])
+                        if result.get("usage"):
+                            u = result["usage"]
+                            st.caption(f"tokens: {getattr(u, 'total_tokens', '—')}")
+                    else:
+                        st.warning(result["text"])
+
+            # 固定の共通注意文（LLM出力と独立して常時表示）
+            st.markdown("**共通の前提・注意（固定）**")
+            for note in COMMON_FIXED_NOTES:
+                st.markdown(f"- {note}")
+
+            # APIキー未設定のときのヒント
+            if _get_groq_client() is None:
+                st.info(
+                    "実行には `GROQ_API_KEY` の設定が必要です。Streamlit Cloudは `st.secrets`、ローカルは環境変数で設定してください。"
+                )
 
 
 if __name__ == "__main__":

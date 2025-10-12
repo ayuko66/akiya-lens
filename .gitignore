@@ -6,3 +6,4 @@ data/*
 !data/processed/features_master__wide__v1.csv
 !data/processed/diff_model_inspector.json
 !data/processed/model_metrics.json
+.env
