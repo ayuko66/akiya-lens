@@ -225,6 +225,7 @@ def load_catboost_model(path: Path) -> Optional[CatBoostRegressor]:
 
 # ---------------------------------------------------------------------------
 # Risk classification & geo utilities
+# 「最優先」「注意」「警戒」「低」の4段階で評価
 # ---------------------------------------------------------------------------
 
 
@@ -233,13 +234,14 @@ def classify_risk(df: pd.DataFrame, tolerance: float) -> pd.DataFrame:
     df = df.copy()
     vac18 = get_numeric_series(df, "空き家率_2018")
     vac23 = get_numeric_series(df, "空き家率_2023")
-    delta = vac23 - vac18
+    delta = vac23 - vac18  # 空き家率変化量
 
+    # 2023年の空き家率の中央値（75パーセンタイル値）を計算 (2023年の空き家率が高いかどうか)
     if vac23.dropna().empty:
         threshold = np.nan
     else:
         threshold = float(np.nanpercentile(vac23.dropna(), 75))
-
+    # 各市区町村の空き家率のトレンド 「増」「減」「横ばい」
     trend = np.where(
         delta > tolerance, "増", np.where(delta < -tolerance, "減", "横ばい")
     )
@@ -247,6 +249,7 @@ def classify_risk(df: pd.DataFrame, tolerance: float) -> pd.DataFrame:
         vac23 >= threshold if not np.isnan(threshold) else np.full(len(vac23), False)
     )
 
+    # リスクレベルの判定
     labels = []
     for is_high, trend_value in zip(high_now, trend):
         label = RISK_RULES.get((bool(is_high), trend_value), DEFAULT_RISK_LABEL)
@@ -538,7 +541,7 @@ def build_map(
 def main() -> None:
     st.set_page_config(page_title="Akiya-Lens", layout="wide")
     inject_css()
-    st.title("🏠 Akiya-Lens 空き家率モデルビューア")
+    st.title("🏠 Akiya-Lens 山麓 空き家マップ")
     st.caption("2018→2023 空き家の要因分析MAP")
 
     try:
