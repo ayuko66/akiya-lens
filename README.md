@@ -60,6 +60,28 @@ CatBoost を用いた残差学習モデルで 2023 年の空き家率を推定�
 
 ---
 
+## 実行環境
+- Python 3.10 以上を前提（uv または標準の `venv` / `pip` で検証）
+- macOS / Linux の Unix 系 OS を想定（ARM64, x86_64 いずれも可）
+- メモリ 16GB 以上を推奨（CatBoost の学習や Geo データ前処理が高負荷なため）
+- Streamlit 1.31+ / Node.js などの外部サービスは不要（ブラウザ上で完結）
+
+## 使用技術・ライブラリ
+- **Web UI**: Streamlit, streamlit-folium, Folium, PyDeck
+- **機械学習**: CatBoost, XGBoost, scikit-learn, Optuna, SHAP
+- **地理空間処理**: GeoPandas, Shapely, PyProj, osm2geojson, branca
+- **データ処理/可視化**: pandas, matplotlib, plotly, japanize-matplotlib
+- **LLM 連携 (任意)**: Groq API クライアント（LLaMA 系モデル推論）
+
+## ツールチェーン
+- 依存関係管理: uv（`uv sync`）、pip / requirements.txt
+- 設定ファイル: `pyproject.toml` に Python パッケージとメタ情報を記載
+- データパイプライン: `scripts/` 配下に ETL / モデル更新ユーティリティを整理
+- ノートブック: `notebook/` 配下で探索的解析・モデル検証を管理
+- バージョン管理: Git（`akiya-lens.code-workspace` で VS Code ワークスペース設定あり）
+
+---
+
 ## セットアップ
 
 ### 1. Python 環境
